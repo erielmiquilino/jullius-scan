@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/erielfranco/jullius-scan/backend/internal/domain"
 )
 
@@ -123,6 +125,41 @@ func (q *JobQueries) FindCompletedReceiptByURL(ctx context.Context, houseID int6
 	return &r, nil
 }
 
+// FindJobByReceiptID finds the job that produced a given receipt.
+func (q *JobQueries) FindJobByReceiptID(ctx context.Context, receiptID int64) (*domain.ScrapingJob, error) {
+	var j domain.ScrapingJob
+	err := q.db.Pool.QueryRow(ctx,
+		`SELECT id, house_id, submitted_by, fiscal_url, status, attempts,
+		        failure_reason, error_detail, receipt_id, created_at, started_at, completed_at
+		 FROM scraping_jobs
+		 WHERE receipt_id = $1
+		 LIMIT 1`,
+		receiptID,
+	).Scan(&j.ID, &j.HouseID, &j.SubmittedBy, &j.FiscalURL, &j.Status, &j.Attempts,
+		&j.FailureReason, &j.ErrorDetail, &j.ReceiptID, &j.CreatedAt, &j.StartedAt, &j.CompletedAt)
+	if err != nil {
+		return nil, fmt.Errorf("find job by receipt_id: %w", err)
+	}
+	return &j, nil
+}
+
+// GetByID retrieves a scraping job by its ID.
+func (q *JobQueries) GetByID(ctx context.Context, jobID int64) (*domain.ScrapingJob, error) {
+	var j domain.ScrapingJob
+	err := q.db.Pool.QueryRow(ctx,
+		`SELECT id, house_id, submitted_by, fiscal_url, status, attempts,
+		        failure_reason, error_detail, receipt_id, created_at, started_at, completed_at
+		 FROM scraping_jobs
+		 WHERE id = $1`,
+		jobID,
+	).Scan(&j.ID, &j.HouseID, &j.SubmittedBy, &j.FiscalURL, &j.Status, &j.Attempts,
+		&j.FailureReason, &j.ErrorDetail, &j.ReceiptID, &j.CreatedAt, &j.StartedAt, &j.CompletedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get job by id: %w", err)
+	}
+	return &j, nil
+}
+
 // CreateJob inserts a new scraping job.
 func (q *JobQueries) CreateJob(ctx context.Context, job *domain.ScrapingJob) error {
 	err := q.db.Pool.QueryRow(ctx,
@@ -155,6 +192,154 @@ func (q *JobQueries) UpdateJobStatus(ctx context.Context, jobID int64, status do
 	)
 	if err != nil {
 		return fmt.Errorf("update job status: %w", err)
+	}
+	return nil
+}
+
+// ReceiptQueries provides database operations for receipts, stores, and items.
+type ReceiptQueries struct {
+	db *DB
+}
+
+// NewReceiptQueries creates a new ReceiptQueries instance.
+func NewReceiptQueries(db *DB) *ReceiptQueries {
+	return &ReceiptQueries{db: db}
+}
+
+// ListByHouse returns all receipts belonging to a house, ordered by creation date desc.
+func (q *ReceiptQueries) ListByHouse(ctx context.Context, houseID int64) ([]domain.Receipt, error) {
+	rows, err := q.db.Pool.Query(ctx,
+		`SELECT id, house_id, store_id, fiscal_key, fiscal_url, issued_at, total_amount, created_at
+		 FROM receipts
+		 WHERE house_id = $1
+		 ORDER BY created_at DESC`,
+		houseID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list receipts by house: %w", err)
+	}
+	defer rows.Close()
+
+	var receipts []domain.Receipt
+	for rows.Next() {
+		var r domain.Receipt
+		if err := rows.Scan(&r.ID, &r.HouseID, &r.StoreID, &r.FiscalKey, &r.FiscalURL,
+			&r.IssuedAt, &r.TotalAmount, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan receipt row: %w", err)
+		}
+		receipts = append(receipts, r)
+	}
+	return receipts, rows.Err()
+}
+
+// GetByID returns a single receipt by its ID.
+func (q *ReceiptQueries) GetByID(ctx context.Context, receiptID int64) (*domain.Receipt, error) {
+	var r domain.Receipt
+	err := q.db.Pool.QueryRow(ctx,
+		`SELECT id, house_id, store_id, fiscal_key, fiscal_url, issued_at, total_amount, created_at
+		 FROM receipts
+		 WHERE id = $1`,
+		receiptID,
+	).Scan(&r.ID, &r.HouseID, &r.StoreID, &r.FiscalKey, &r.FiscalURL,
+		&r.IssuedAt, &r.TotalAmount, &r.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get receipt by id: %w", err)
+	}
+	return &r, nil
+}
+
+// GetStoreByID returns a store by its ID.
+func (q *ReceiptQueries) GetStoreByID(ctx context.Context, storeID int64) (*domain.Store, error) {
+	var s domain.Store
+	err := q.db.Pool.QueryRow(ctx,
+		`SELECT id, cnpj, name, address, created_at
+		 FROM stores
+		 WHERE id = $1`,
+		storeID,
+	).Scan(&s.ID, &s.CNPJ, &s.Name, &s.Address, &s.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get store by id: %w", err)
+	}
+	return &s, nil
+}
+
+// GetItemsByReceiptID returns all items for a receipt.
+func (q *ReceiptQueries) GetItemsByReceiptID(ctx context.Context, receiptID int64) ([]domain.Item, error) {
+	rows, err := q.db.Pool.Query(ctx,
+		`SELECT id, receipt_id, description, quantity, unit, unit_price, total_price
+		 FROM items
+		 WHERE receipt_id = $1
+		 ORDER BY id`,
+		receiptID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get items by receipt_id: %w", err)
+	}
+	defer rows.Close()
+
+	var items []domain.Item
+	for rows.Next() {
+		var it domain.Item
+		if err := rows.Scan(&it.ID, &it.ReceiptID, &it.Description, &it.Quantity,
+			&it.Unit, &it.UnitPrice, &it.TotalPrice); err != nil {
+			return nil, fmt.Errorf("scan item row: %w", err)
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
+// UpsertStore inserts a store or returns the existing one by CNPJ.
+func (q *ReceiptQueries) UpsertStore(ctx context.Context, store *domain.Store) error {
+	err := q.db.Pool.QueryRow(ctx,
+		`INSERT INTO stores (cnpj, name, address, created_at)
+		 VALUES ($1, $2, $3, NOW())
+		 ON CONFLICT (cnpj) DO UPDATE SET name = EXCLUDED.name, address = EXCLUDED.address
+		 RETURNING id, created_at`,
+		store.CNPJ, store.Name, store.Address,
+	).Scan(&store.ID, &store.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("upsert store: %w", err)
+	}
+	return nil
+}
+
+// CreateReceipt inserts a new receipt.
+func (q *ReceiptQueries) CreateReceipt(ctx context.Context, receipt *domain.Receipt) error {
+	err := q.db.Pool.QueryRow(ctx,
+		`INSERT INTO receipts (house_id, store_id, fiscal_key, fiscal_url, issued_at, total_amount, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		 RETURNING id, created_at`,
+		receipt.HouseID, receipt.StoreID, receipt.FiscalKey, receipt.FiscalURL, receipt.IssuedAt, receipt.TotalAmount,
+	).Scan(&receipt.ID, &receipt.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("create receipt: %w", err)
+	}
+	return nil
+}
+
+// CreateItems inserts multiple items for a receipt using a batch.
+func (q *ReceiptQueries) CreateItems(ctx context.Context, items []domain.Item) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	batch := &pgx.Batch{}
+	for _, it := range items {
+		batch.Queue(
+			`INSERT INTO items (receipt_id, description, quantity, unit, unit_price, total_price)
+			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			it.ReceiptID, it.Description, it.Quantity, it.Unit, it.UnitPrice, it.TotalPrice,
+		)
+	}
+
+	br := q.db.Pool.SendBatch(ctx, batch)
+	defer br.Close()
+
+	for range items {
+		if _, err := br.Exec(); err != nil {
+			return fmt.Errorf("create item: %w", err)
+		}
 	}
 	return nil
 }

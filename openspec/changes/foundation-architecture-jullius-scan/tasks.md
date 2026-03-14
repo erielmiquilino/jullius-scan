@@ -7,17 +7,17 @@
 
 ## 2. Receipt Ingestion API
 
-- [ ] 2.1 Implement the authenticated endpoint to submit an NFC-e QR Code URL and create an idempotent scraping job scoped to a House
-- [ ] 2.2 Implement receipt/job query endpoints that return House-scoped status and completed normalized receipt data for all members
-- [ ] 2.3 Add request validation, House access enforcement, and error contracts for invalid tokens, malformed URLs, and cross-house access
+- [x] 2.1 Implement the authenticated endpoint to submit an NFC-e QR Code URL and create an idempotent scraping job scoped to a House
+- [x] 2.2 Implement receipt/job query endpoints that return House-scoped status and completed normalized receipt data for all members
+- [x] 2.3 Add request validation, House access enforcement, and error contracts for invalid tokens, malformed URLs, and cross-house access
 
 ## 3. Asynchronous Scraping Flow
 
-- [ ] 3.1 Implement Redis-backed job dispatch plus persisted job lifecycle management with queued, processing, completed, and failed states plus timestamps
-- [ ] 3.2 Build the worker execution flow that fetches pending jobs, runs `chromedp` with explicit timeouts, and guarantees browser cleanup on failure
-- [ ] 3.3 Configure the worker with a 45-second timeout per job and a maximum of 3 retry attempts for transient failures
-- [ ] 3.4 Implement parsing, House-scoped normalization, and persistence of receipt metadata, totals, store, and item records from extracted HTML
-- [ ] 3.5 Classify Captcha blocking as an accepted MVP failure mode without integrating third-party solving services
+- [x] 3.1 Implement Redis-backed job dispatch plus persisted job lifecycle management with queued, processing, completed, and failed states plus timestamps
+- [x] 3.2 Build the worker execution flow that fetches pending jobs, runs `chromedp` with explicit timeouts, and guarantees browser cleanup on failure
+- [x] 3.3 Configure the worker with a 45-second timeout per job and a maximum of 3 retry attempts for transient failures
+- [x] 3.4 Implement parsing, House-scoped normalization, and persistence of receipt metadata, totals, store, and item records from extracted HTML
+- [x] 3.5 Classify Captcha blocking as an accepted MVP failure mode without integrating third-party solving services
 
 ## 4. Platform Infrastructure
 

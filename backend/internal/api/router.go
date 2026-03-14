@@ -27,23 +27,22 @@ func NewRouter(db *database.DB, q *queue.Client, auth *middleware.FirebaseAuth) 
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
+	// Create handlers with all dependencies
+	h := NewHandlers(db, q)
+
 	// Authenticated API routes
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(auth.Authenticate)
 		r.Use(middleware.ResolveHouse(db))
 
-		// Receipt/job endpoints (stubs - implemented in task group 2)
-		r.Post("/receipts", notImplemented)
-		r.Get("/receipts", notImplemented)
-		r.Get("/receipts/{id}", notImplemented)
-		r.Get("/jobs/{id}", notImplemented)
+		// Receipt endpoints
+		r.Post("/receipts", h.SubmitReceipt)
+		r.Get("/receipts", h.ListReceipts)
+		r.Get("/receipts/{id}", h.GetReceipt)
+
+		// Job endpoints
+		r.Get("/jobs/{id}", h.GetJob)
 	})
 
 	return r
-}
-
-func notImplemented(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusNotImplemented)
-	w.Write([]byte(`{"error":"not implemented"}`))
 }
