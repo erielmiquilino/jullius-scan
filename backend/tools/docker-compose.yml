@@ -1,3 +1,11 @@
+# Jullius Scan — Local Development Docker Compose
+#
+# Usage:
+#   docker compose -f backend/tools/docker-compose.yml up -d
+#
+# This starts postgres, redis, api, and worker locally.
+# API is available at http://localhost:8080
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -20,6 +28,45 @@ services:
       - "6379:6379"
     volumes:
       - redisdata:/data
+
+  api:
+    build:
+      context: ../
+      dockerfile: Dockerfile.api
+    container_name: jullius-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      API_PORT: "8080"
+      DATABASE_URL: postgres://jullius:jullius@postgres:5432/jullius?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: "0"
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-jullius-scan-dev}
+      MIGRATIONS_PATH: /app/migrations
+
+  worker:
+    build:
+      context: ../
+      dockerfile: Dockerfile.worker
+    container_name: jullius-worker
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      DATABASE_URL: postgres://jullius:jullius@postgres:5432/jullius?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: "0"
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-jullius-scan-dev}
+      SCRAPE_TIMEOUT_SECONDS: "45"
+      MAX_RETRIES: "3"
+      WORKER_POOL_SIZE: "1"
 
 volumes:
   pgdata:

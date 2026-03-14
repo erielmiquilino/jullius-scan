@@ -1,0 +1,53 @@
+# Jullius Scan — Production Docker Compose (VPS)
+#
+# Prerequisites on VPS:
+#   - Traefik running on external network "proxy-net"
+#   - Shared PostgreSQL on "proxy-net" (hostname: postgres_shared)
+#   - Redis manually provisioned on "proxy-net"
+#
+# Usage:
+#   cp .env.example .env   # fill in real values
+#   docker compose pull
+#   docker compose up -d
+
+services:
+  api:
+    image: registry.skadi.digital/jullius-scan/api:${IMAGE_TAG:-latest}
+    container_name: jullius-api
+    restart: always
+    networks:
+      - proxy-net
+    environment:
+      API_PORT: "8080"
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_ADDR: ${REDIS_ADDR}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-0}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID}
+      MIGRATIONS_PATH: /app/migrations
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.jullius-api.rule=Host(`${API_HOST}`)"
+      - "traefik.http.routers.jullius-api.entrypoints=websecure"
+      - "traefik.http.routers.jullius-api.tls.certresolver=myresolver"
+      - "traefik.http.services.jullius-api.loadbalancer.server.port=8080"
+
+  worker:
+    image: registry.skadi.digital/jullius-scan/worker:${IMAGE_TAG:-latest}
+    container_name: jullius-worker
+    restart: always
+    networks:
+      - proxy-net
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_ADDR: ${REDIS_ADDR}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-0}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID}
+      SCRAPE_TIMEOUT_SECONDS: ${SCRAPE_TIMEOUT_SECONDS:-45}
+      MAX_RETRIES: ${MAX_RETRIES:-3}
+      WORKER_POOL_SIZE: ${WORKER_POOL_SIZE:-1}
+
+networks:
+  proxy-net:
+    external: true

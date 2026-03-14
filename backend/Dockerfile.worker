@@ -1,0 +1,46 @@
+# ── Build stage ──────────────────────────────────────────────
+FROM golang:1.23-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /src
+
+# Cache dependencies
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source and build
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/worker ./cmd/worker
+
+# ── Runtime stage ────────────────────────────────────────────
+# Use Debian-based image for Chromium compatibility (chromedp)
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    chromium \
+    fonts-liberation \
+    libnss3 \
+    libatk-bridge2.0-0 \
+    libdrm2 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libcups2 \
+    libxkbcommon0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# chromedp will use this path
+ENV CHROMEDP_DISABLE_GPU=true
+ENV CHROME_BIN=/usr/bin/chromium
+
+WORKDIR /app
+
+COPY --from=builder /bin/worker /app/worker
+
+ENTRYPOINT ["/app/worker"]

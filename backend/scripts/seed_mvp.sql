@@ -20,9 +20,9 @@ ON CONFLICT DO NOTHING;
 -- User 1 (owner)
 INSERT INTO users (firebase_id, email, name)
 VALUES (
-    'REPLACE_WITH_FIREBASE_UID_1',
-    'owner@example.com',
-    'Owner Name'
+    'uDHqwvSTzqNnpjlUjjkWVoPjuM42',
+    'erielmiquilino@hotmail.com',
+    'Eriel Miquilino'
 )
 ON CONFLICT (firebase_id) DO NOTHING;
 
@@ -40,7 +40,7 @@ ON CONFLICT (firebase_id) DO NOTHING;
 INSERT INTO house_members (user_id, house_id, role)
 SELECT u.id, h.id, 'owner'
 FROM users u, houses h
-WHERE u.firebase_id = 'REPLACE_WITH_FIREBASE_UID_1'
+WHERE u.firebase_id = 'uDHqwvSTzqNnpjlUjjkWVoPjuM42'
   AND h.name = 'Casa Principal'
 ON CONFLICT (user_id, house_id) DO NOTHING;
 

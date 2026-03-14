@@ -178,17 +178,18 @@ func (q *JobQueries) CreateJob(ctx context.Context, job *domain.ScrapingJob) err
 
 // UpdateJobStatus updates the status and related fields of a scraping job.
 func (q *JobQueries) UpdateJobStatus(ctx context.Context, jobID int64, status domain.JobStatus, failureReason *domain.FailureReason, errorDetail string, receiptID *int64) error {
+	statusText := string(status)
 	_, err := q.db.Pool.Exec(ctx,
 		`UPDATE scraping_jobs
 		 SET status = $2,
 		     failure_reason = $3,
 		     error_detail = $4,
 		     receipt_id = $5,
-		     started_at = CASE WHEN $2 = 'processing' AND started_at IS NULL THEN NOW() ELSE started_at END,
-		     completed_at = CASE WHEN $2 IN ('completed', 'failed') THEN NOW() ELSE completed_at END,
-		     attempts = CASE WHEN $2 = 'processing' THEN attempts + 1 ELSE attempts END
+		     started_at = CASE WHEN $6 = 'processing' AND started_at IS NULL THEN NOW() ELSE started_at END,
+		     completed_at = CASE WHEN $6 IN ('completed', 'failed') THEN NOW() ELSE completed_at END,
+		     attempts = CASE WHEN $6 = 'processing' THEN attempts + 1 ELSE attempts END
 		 WHERE id = $1`,
-		jobID, status, failureReason, errorDetail, receiptID,
+		jobID, status, failureReason, errorDetail, receiptID, statusText,
 	)
 	if err != nil {
 		return fmt.Errorf("update job status: %w", err)

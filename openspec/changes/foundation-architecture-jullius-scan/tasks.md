@@ -21,9 +21,9 @@
 
 ## 4. Platform Infrastructure
 
-- [ ] 4.1 Create Dockerfiles and Docker Compose services for API, scraping worker, PostgreSQL, and Traefik aligned with the existing registry-based delivery flow
-- [ ] 4.2 Configure Traefik labels, internal networking, and environment-based runtime configuration for secrets, Redis connectivity, and service settings
-- [ ] 4.3 Create GitHub Actions workflows to build images, publish them to `https://registry.skadi.digital/`, and deploy to the VPS over SSH with the existing `.pem` key
+- [x] 4.1 Create Dockerfiles and Docker Compose services for API, scraping worker, PostgreSQL, and Traefik aligned with the existing registry-based delivery flow
+- [x] 4.2 Configure Traefik labels, internal networking, and environment-based runtime configuration for secrets, Redis connectivity, and service settings
+- [x] 4.3 Create GitHub Actions workflows to build images, publish them to `https://registry.skadi.digital/`, and deploy to the VPS over SSH with the existing `.pem` key
 
 ## 5. Mobile Integration Baseline
 
