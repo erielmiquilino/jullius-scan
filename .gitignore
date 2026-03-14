@@ -1,0 +1,10 @@
+*.log
+*.out
+*.test
+*.exe
+bin/
+coverage.out
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
