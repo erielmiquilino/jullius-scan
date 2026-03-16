@@ -27,14 +27,7 @@
 
 ## 5. Mobile Integration Baseline
 
-- [ ] 5.1 Create the Flutter app skeleton with Firebase Auth integration and API client configuration
-- [ ] 5.2 Implement the initial receipt submission and status polling flow using QR Code URL input as the temporary entry path
-- [ ] 5.3 Keep the app aligned with manual MVP provisioning by assuming a preconfigured House context for authorized users
-- [ ] 5.4 Add UI states for pending, success, timeout, captcha-blocked, and failed receipt extraction results aligned with backend job statuses
-
-## 6. Verification and Operations
-
-- [ ] 6.1 Add automated tests for auth validation, House membership access rules, receipt submission idempotency, and job lifecycle transitions
-- [ ] 6.2 Add automated or integration checks that validate Redis enqueue/consume flow plus `chromedp` timeout cancellation and browser cleanup behavior
-- [ ] 6.3 Add structured logging and operational diagnostics for API requests, scraping attempts, retries, timeouts, captcha failures, and terminal failures without storing raw HTML
-- [ ] 6.4 Validate end-to-end deployment on the VPS using `https://registry.skadi.digital/`, SSH-based rollout, and the manually provisioned Redis container, then document rollback steps
+- [x] 5.1 Create the Flutter app skeleton with Firebase Auth integration and API client configuration
+- [x] 5.2 Implement the initial receipt submission and status polling flow using QR Code URL input as the temporary entry path
+- [x] 5.3 Keep the app aligned with manual MVP provisioning by assuming a preconfigured House context for authorized users
+- [x] 5.4 Add UI states for pending, success, timeout, captcha-blocked, and failed receipt extraction results aligned with backend job statuses

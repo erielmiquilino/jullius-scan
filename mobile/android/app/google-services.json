@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "719380521368",
+    "project_id": "jullius-scan",
+    "storage_bucket": "jullius-scan.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:719380521368:android:1fe947cd6a8413e1078bed",
+        "android_client_info": {
+          "package_name": "digital.skadi.jullius.jullius_scan"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCVskm4FcLPmL3INBtcey12zHIgakzPIW8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

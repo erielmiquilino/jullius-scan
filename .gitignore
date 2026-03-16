@@ -8,3 +8,8 @@ coverage.out
 Thumbs.db
 .idea/
 .vscode/
+testing/e2e/backend/node_modules/
+testing/e2e/backend/playwright-report/
+testing/e2e/backend/test-results/
+testing/e2e/backend/.auth/
+testing/e2e/backend/.env

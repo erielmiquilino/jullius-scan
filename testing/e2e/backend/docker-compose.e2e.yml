@@ -1,0 +1,100 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: jullius-e2e-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jullius
+      POSTGRES_PASSWORD: jullius
+      POSTGRES_DB: jullius_e2e
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jullius -d jullius_e2e"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: jullius-e2e-redis
+    restart: unless-stopped
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  sefaz-mock:
+    image: node:22-alpine
+    container_name: jullius-e2e-sefaz-mock
+    working_dir: /app
+    command: ["node", "mock-server.js"]
+    volumes:
+      - ./mocks/sefaz:/app/mocks:ro
+      - ./mocks/sefaz/mock-server.js:/app/mock-server.js:ro
+    ports:
+      - "18091:8091"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8091/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: ../../../backend
+      dockerfile: Dockerfile.api
+    container_name: jullius-e2e-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      API_PORT: "8080"
+      DATABASE_URL: postgres://jullius:jullius@postgres:5432/jullius_e2e?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: "0"
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-jullius-scan}
+      FIREBASE_CREDENTIALS_JSON: ${FIREBASE_CREDENTIALS_JSON:-}
+      MIGRATIONS_PATH: /app/migrations
+    ports:
+      - "18080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    build:
+      context: ../../../backend
+      dockerfile: Dockerfile.worker
+    container_name: jullius-e2e-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      sefaz-mock:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://jullius:jullius@postgres:5432/jullius_e2e?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: "0"
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-jullius-scan}
+      SCRAPE_TIMEOUT_SECONDS: "5"
+      MAX_RETRIES: "3"
+      WORKER_POOL_SIZE: "1"
+    healthcheck:
+      test: ["CMD-SHELL", "ps -ef | grep '/app/worker' | grep -v grep >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20

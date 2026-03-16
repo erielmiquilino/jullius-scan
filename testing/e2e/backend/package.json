@@ -1,0 +1,41 @@
+{
+  "name": "@jullius-scan/backend-e2e",
+  "version": "1.0.0",
+  "description": "Backend E2E automation workspace for Jullius Scan",
+  "private": true,
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "install:browsers": "playwright install",
+    "test": "playwright test",
+    "test:smoke": "playwright test tests/smoke",
+    "test:full": "playwright test tests",
+    "report": "playwright show-report",
+    "env:up": "docker compose -f docker-compose.e2e.yml up -d --build --wait",
+    "env:down": "docker compose -f docker-compose.e2e.yml down -v",
+    "env:logs": "docker compose -f docker-compose.e2e.yml logs --no-color",
+    "env:wait": "tsx src/scripts/wait-for-stack.ts"
+  },
+  "keywords": [
+    "playwright",
+    "e2e",
+    "backend",
+    "testing"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^25.5.0",
+    "dotenv": "^17.3.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "ioredis": "^5.10.0",
+    "pg": "^8.20.0"
+  }
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 
 	firebase "firebase.google.com/go/v4"
@@ -20,22 +21,56 @@ type FirebaseAuth struct {
 // NewFirebaseAuth initializes the Firebase Auth client.
 // It uses GOOGLE_APPLICATION_CREDENTIALS env var or Application Default Credentials.
 func NewFirebaseAuth(ctx context.Context, projectID string) (*FirebaseAuth, error) {
-	var app *firebase.App
-	var err error
-
 	conf := &firebase.Config{ProjectID: projectID}
-	app, err = firebase.NewApp(ctx, conf, option.WithoutAuthentication())
+	client, mode, err := newFirebaseAuthClient(ctx, conf)
 	if err != nil {
 		return nil, err
+	}
+
+	slog.Info("firebase auth initialized", "project_id", projectID, "mode", mode)
+	return &FirebaseAuth{client: client}, nil
+}
+
+func newFirebaseAuthClient(ctx context.Context, conf *firebase.Config) (*auth.Client, string, error) {
+	if credsJSON := os.Getenv("FIREBASE_CREDENTIALS_JSON"); credsJSON != "" {
+		app, err := firebase.NewApp(ctx, conf, option.WithCredentialsJSON([]byte(credsJSON)))
+		if err != nil {
+			return nil, "", err
+		}
+		client, err := app.Auth(ctx)
+		if err != nil {
+			return nil, "", err
+		}
+		return client, "credentials_json", nil
+	}
+
+	app, err := firebase.NewApp(ctx, conf)
+	if err == nil {
+		client, authErr := app.Auth(ctx)
+		if authErr == nil {
+			if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "" {
+				return client, "google_application_credentials", nil
+			}
+			return client, "application_default_credentials", nil
+		}
+		err = authErr
+	}
+
+	slog.Warn("firebase auth credentials unavailable, falling back to stateless token verification",
+		"error", err,
+	)
+
+	app, err = firebase.NewApp(ctx, conf, option.WithoutAuthentication())
+	if err != nil {
+		return nil, "", err
 	}
 
 	client, err := app.Auth(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	slog.Info("firebase auth initialized", "project_id", projectID)
-	return &FirebaseAuth{client: client}, nil
+	return client, "without_authentication_fallback", nil
 }
 
 // Authenticate is an HTTP middleware that validates the Bearer token from

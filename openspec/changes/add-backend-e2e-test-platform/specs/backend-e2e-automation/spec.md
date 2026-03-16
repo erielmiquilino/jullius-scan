@@ -1,0 +1,86 @@
+## ADDED Requirements
+
+### Requirement: Separate backend E2E workspace
+The system SHALL provide a backend E2E automation workspace that is physically separated from the main backend runtime code and from any future mobile E2E suite.
+
+#### Scenario: Keep backend runtime free from E2E Node dependencies
+- **WHEN** the backend E2E suite is installed and executed
+- **THEN** its Playwright and TypeScript dependencies live in a dedicated automation workspace rather than inside the main Go backend module
+
+#### Scenario: Preserve future mobile E2E separation
+- **WHEN** the repository later adds a Flutter mobile E2E suite
+- **THEN** that suite can be created in a parallel workspace without sharing the same root commands, config files, or suite directory with backend E2E
+
+### Requirement: End-to-end backend flow coverage
+The backend E2E suite SHALL validate the real application flow across HTTP API, asynchronous worker processing, Redis queueing, and PostgreSQL persistence.
+
+#### Scenario: Validate successful receipt processing flow
+- **WHEN** the suite submits a valid receipt extraction request through the API in the test environment
+- **THEN** it verifies that a job is created, processed asynchronously by the worker, and persisted as normalized receipt data in PostgreSQL
+
+#### Scenario: Validate final result retrieval
+- **WHEN** a test receipt processing flow completes successfully
+- **THEN** the suite verifies that the API exposes the completed job and receipt result expected for the requesting House context
+
+### Requirement: Deterministic test environment orchestration
+The backend E2E suite SHALL run against a reproducible environment that includes isolated API, worker, PostgreSQL, and Redis services suitable for local and CI execution.
+
+#### Scenario: Start isolated backend E2E stack
+- **WHEN** a developer or CI job starts the backend E2E suite
+- **THEN** the required services run in an isolated test environment that does not depend on shared long-lived development infrastructure
+
+#### Scenario: Avoid mandatory external SEFAZ dependency
+- **WHEN** the backend E2E suite runs its deterministic scenarios
+- **THEN** it does not require live public SEFAZ availability to validate the internal backend flow
+
+#### Scenario: Serve SEFAZ fixture from local mock server
+- **WHEN** the deterministic backend E2E stack starts
+- **THEN** it includes a simple local mock server that exposes the static fixture `nfce-consulta-detalhada.html` from the backend E2E workspace for the Go worker to fetch during tests
+
+### Requirement: Real Firebase authentication in E2E
+The backend E2E suite SHALL authenticate through a real dedicated Firebase project using the Firebase REST API, without adding any authentication bypass logic to the Go product code.
+
+#### Scenario: Obtain real JWT for API requests
+- **WHEN** a backend E2E scenario needs to call an authenticated API endpoint
+- **THEN** the suite signs in through the Firebase REST API using environment-provided test credentials and reuses the resulting JWT against the Go API
+
+#### Scenario: Preserve product authentication path
+- **WHEN** backend E2E automation is added to the repository
+- **THEN** the Go API continues to validate Firebase tokens through its normal product path rather than through test-only bypass behavior
+
+### Requirement: Controlled seed and reset workflow
+The backend E2E suite SHALL initialize PostgreSQL and Redis into a known state before tests through explicit seed and cleanup mechanisms.
+
+#### Scenario: Reset state before execution
+- **WHEN** a backend E2E test run starts
+- **THEN** the suite clears or recreates relevant database and Redis state so prior runs do not influence results
+
+#### Scenario: Seed required business context
+- **WHEN** a scenario needs authenticated users, Houses, memberships, jobs, or receipts
+- **THEN** the suite provisions only the explicit test fixtures required for that scenario in a repeatable way
+
+#### Scenario: Reset and inspect state from TypeScript utilities
+- **WHEN** the suite prepares or verifies test state
+- **THEN** it can connect directly to PostgreSQL and Redis from the backend E2E workspace using dedicated TypeScript clients to seed, clean, inspect, and preload deterministic conditions
+
+### Requirement: Async-aware verification helpers
+The backend E2E suite SHALL provide centralized waiting helpers for asynchronous job completion and failure diagnosis.
+
+#### Scenario: Poll until job reaches terminal state
+- **WHEN** a scenario triggers worker processing that completes asynchronously
+- **THEN** the suite waits using bounded polling helpers instead of relying on arbitrary fixed sleeps as the primary synchronization strategy
+
+#### Scenario: Emit diagnosable timeout failures
+- **WHEN** a job does not reach the expected state within the configured E2E timeout
+- **THEN** the suite fails with diagnostics that identify the last observed API or persistence state
+
+### Requirement: Suite-scoped commands and artifacts
+The backend E2E suite SHALL expose its own execution commands, reports, and failure artifacts independently from future mobile E2E automation.
+
+#### Scenario: Run backend E2E alone
+- **WHEN** a developer runs the backend E2E command set
+- **THEN** only the backend automation workspace configuration, tests, and reports are involved
+
+#### Scenario: Collect failure artifacts for CI
+- **WHEN** a backend E2E scenario fails in local execution or CI
+- **THEN** the suite stores runner artifacts such as logs, traces, or reports in a backend-E2E-specific location
