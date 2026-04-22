@@ -27,6 +27,9 @@ type Config struct {
 	ScrapeTimeout  time.Duration
 	MaxRetries     int
 	WorkerPoolSize int
+
+	// Captcha
+	CaptchaTimeout time.Duration
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -57,6 +60,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid MAX_RETRIES: %w", err)
 	}
 	cfg.MaxRetries = maxRetries
+
+	captchaTimeoutMin, err := strconv.Atoi(getEnv("CAPTCHA_TIMEOUT_MINUTES", "10"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid CAPTCHA_TIMEOUT_MINUTES: %w", err)
+	}
+	cfg.CaptchaTimeout = time.Duration(captchaTimeoutMin) * time.Minute
 
 	poolSize, err := strconv.Atoi(getEnv("WORKER_POOL_SIZE", "1"))
 	if err != nil {

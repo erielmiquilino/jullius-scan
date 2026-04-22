@@ -6,8 +6,10 @@ import 'package:http/http.dart' as http;
 
 import 'package:jullius_scan/config/api_config.dart';
 import 'package:jullius_scan/models/api_error.dart';
+import 'package:jullius_scan/models/captcha_context.dart';
 import 'package:jullius_scan/models/job.dart';
 import 'package:jullius_scan/models/receipt.dart';
+import 'package:jullius_scan/models/session_cookie.dart';
 import 'package:jullius_scan/models/submit_receipt.dart';
 import 'package:jullius_scan/services/auth_service.dart';
 
@@ -51,6 +53,13 @@ class ApiClient {
     return _handleResponse(response);
   }
 
+  /// Perform a DELETE request.
+  Future<dynamic> _delete(String path) async {
+    final uri = Uri.parse('$_baseUrl$path');
+    final response = await _http.delete(uri, headers: await _headers());
+    return _handleResponse(response);
+  }
+
   dynamic _handleResponse(http.Response response) {
     if (response.statusCode >= 200 && response.statusCode < 300) {
       if (response.body.isEmpty) return null;
@@ -86,6 +95,12 @@ class ApiClient {
     return Receipt.fromJson(json as Map<String, dynamic>);
   }
 
+  /// Delete a single receipt from the current user's house.
+  /// DELETE /api/v1/receipts/{id}
+  Future<void> deleteReceipt(int id) async {
+    await _delete('/api/v1/receipts/$id');
+  }
+
   // -- Jobs --
 
   /// Get the status of a scraping job.
@@ -95,7 +110,7 @@ class ApiClient {
     return Job.fromJson(json as Map<String, dynamic>);
   }
 
-  /// Poll a job until it reaches a terminal state (completed or failed).
+  /// Poll a job until it reaches a terminal state (completed, failed, or awaiting_captcha).
   ///
   /// Returns the final [Job]. Throws [TimeoutException] if polling exceeds
   /// [ApiConfig.pollTimeout].
@@ -111,6 +126,31 @@ class ApiClient {
     throw TimeoutException(
       'Job $jobId did not complete within ${ApiConfig.pollTimeout.inSeconds}s',
     );
+  }
+
+  // -- Captcha --
+
+  /// Get the SEFAZ URL and user-agent needed to open the captcha WebView.
+  /// GET /api/v1/jobs/{id}/captcha
+  Future<CaptchaContext> fetchCaptchaContext(int jobId) async {
+    final json = await _get('/api/v1/jobs/$jobId/captcha');
+    return CaptchaContext.fromJson(json as Map<String, dynamic>);
+  }
+
+  /// Submit session cookies after the user resolves the captcha in WebView.
+  /// [userAgent] should be the exact UA string used by the WebView so the worker
+  /// can replay the session with the same UA that Cloudflare issued the cookie for.
+  /// POST /api/v1/jobs/{id}/captcha/resume
+  Future<void> submitCaptchaResume(
+    int jobId,
+    List<SessionCookie> cookies, {
+    String? userAgent,
+  }) async {
+    final body = jsonEncode({
+      'cookies': cookies.map((c) => c.toJson()).toList(),
+      if (userAgent != null && userAgent.isNotEmpty) 'user_agent': userAgent,
+    });
+    await _post('/api/v1/jobs/$jobId/captcha/resume', body);
   }
 
   void dispose() {

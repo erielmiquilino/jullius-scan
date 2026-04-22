@@ -12,6 +12,8 @@ import (
 const (
 	// JobQueueKey is the Redis list key for pending scraping jobs.
 	JobQueueKey = "jullius:scraping:jobs"
+	// ResumeQueueKey is the Redis list key for captcha-resume jobs (higher priority).
+	ResumeQueueKey = "jullius:scraping:resume"
 )
 
 // JobMessage represents a scraping job message in the queue.
@@ -20,6 +22,7 @@ type JobMessage struct {
 	FiscalURL string `json:"fiscal_url"`
 	HouseID   int64  `json:"house_id"`
 	Attempt   int    `json:"attempt"`
+	IsResume  bool   `json:"is_resume,omitempty"`
 }
 
 // Client wraps the Redis client for queue operations.
@@ -47,7 +50,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	return c.rdb.Ping(ctx).Err()
 }
 
-// Enqueue pushes a scraping job to the queue.
+// Enqueue pushes a scraping job to the normal queue.
 func (c *Client) Enqueue(ctx context.Context, msg JobMessage) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -56,10 +59,21 @@ func (c *Client) Enqueue(ctx context.Context, msg JobMessage) error {
 	return c.rdb.LPush(ctx, JobQueueKey, data).Err()
 }
 
-// Dequeue blocks waiting for a scraping job from the queue.
-// Returns the job message or blocks until timeout.
+// EnqueueResume pushes a captcha-resume job to the priority resume queue.
+func (c *Client) EnqueueResume(ctx context.Context, msg JobMessage) error {
+	msg.IsResume = true
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal resume job message: %w", err)
+	}
+	return c.rdb.LPush(ctx, ResumeQueueKey, data).Err()
+}
+
+// Dequeue blocks waiting for a scraping job. It checks the priority resume queue
+// first before falling back to the normal job queue.
 func (c *Client) Dequeue(ctx context.Context, timeout time.Duration) (*JobMessage, error) {
-	result, err := c.rdb.BRPop(ctx, timeout, JobQueueKey).Result()
+	// BRPop on multiple keys is priority-ordered: resume queue first.
+	result, err := c.rdb.BRPop(ctx, timeout, ResumeQueueKey, JobQueueKey).Result()
 	if err != nil {
 		if err == redis.Nil {
 			return nil, nil // timeout, no job available

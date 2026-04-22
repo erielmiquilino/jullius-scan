@@ -55,6 +55,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Background: expire stale awaiting_captcha jobs
+	jobQueries := database.NewJobQueries(db)
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				expired, err := jobQueries.ExpireAwaitingCaptchaJobs(ctx, cfg.CaptchaTimeout)
+				if err != nil {
+					slog.Error("failed to expire awaiting captcha jobs", "error", err)
+				} else if expired > 0 {
+					slog.Info("expired awaiting_captcha jobs", "count", expired)
+				}
+			}
+		}
+	}()
+
 	// Router
 	router := api.NewRouter(db, queueClient, authMiddleware)
 

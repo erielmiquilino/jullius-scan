@@ -2,8 +2,10 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -89,18 +91,22 @@ func NewJobQueries(db *DB) *JobQueries {
 	return &JobQueries{db: db}
 }
 
-// FindActiveJobByURL checks if there is an active (queued/processing) job for a fiscal URL in a house.
+// FindActiveJobByURL checks if there is an active (queued/processing/awaiting_captcha) job for a fiscal URL in a house.
 func (q *JobQueries) FindActiveJobByURL(ctx context.Context, houseID int64, fiscalURL string) (*domain.ScrapingJob, error) {
 	var j domain.ScrapingJob
 	err := q.db.Pool.QueryRow(ctx,
 		`SELECT id, house_id, submitted_by, fiscal_url, status, attempts,
-		        failure_reason, error_detail, receipt_id, created_at, started_at, completed_at
+		        failure_reason, error_detail, receipt_id, created_at, started_at, completed_at,
+		        captcha_current_url, captcha_session_cookies, captcha_pending_at, captcha_resumed_at, captcha_retry_count, captcha_user_agent,
+		        captcha_phase, parsed_summary
 		 FROM scraping_jobs
-		 WHERE house_id = $1 AND fiscal_url = $2 AND status IN ('queued', 'processing')
+		 WHERE house_id = $1 AND fiscal_url = $2 AND status IN ('queued', 'processing', 'awaiting_captcha')
 		 LIMIT 1`,
 		houseID, fiscalURL,
 	).Scan(&j.ID, &j.HouseID, &j.SubmittedBy, &j.FiscalURL, &j.Status, &j.Attempts,
-		&j.FailureReason, &j.ErrorDetail, &j.ReceiptID, &j.CreatedAt, &j.StartedAt, &j.CompletedAt)
+		&j.FailureReason, &j.ErrorDetail, &j.ReceiptID, &j.CreatedAt, &j.StartedAt, &j.CompletedAt,
+		&j.CaptchaCurrentURL, &j.CaptchaSessionCookies, &j.CaptchaPendingAt, &j.CaptchaResumedAt, &j.CaptchaRetryCount, &j.CaptchaUserAgent,
+		&j.CaptchaPhase, &j.ParsedSummary)
 	if err != nil {
 		return nil, fmt.Errorf("find active job by url: %w", err)
 	}
@@ -130,13 +136,17 @@ func (q *JobQueries) FindJobByReceiptID(ctx context.Context, receiptID int64) (*
 	var j domain.ScrapingJob
 	err := q.db.Pool.QueryRow(ctx,
 		`SELECT id, house_id, submitted_by, fiscal_url, status, attempts,
-		        failure_reason, error_detail, receipt_id, created_at, started_at, completed_at
+		        failure_reason, error_detail, receipt_id, created_at, started_at, completed_at,
+		        captcha_current_url, captcha_session_cookies, captcha_pending_at, captcha_resumed_at, captcha_retry_count, captcha_user_agent,
+		        captcha_phase, parsed_summary
 		 FROM scraping_jobs
 		 WHERE receipt_id = $1
 		 LIMIT 1`,
 		receiptID,
 	).Scan(&j.ID, &j.HouseID, &j.SubmittedBy, &j.FiscalURL, &j.Status, &j.Attempts,
-		&j.FailureReason, &j.ErrorDetail, &j.ReceiptID, &j.CreatedAt, &j.StartedAt, &j.CompletedAt)
+		&j.FailureReason, &j.ErrorDetail, &j.ReceiptID, &j.CreatedAt, &j.StartedAt, &j.CompletedAt,
+		&j.CaptchaCurrentURL, &j.CaptchaSessionCookies, &j.CaptchaPendingAt, &j.CaptchaResumedAt, &j.CaptchaRetryCount, &j.CaptchaUserAgent,
+		&j.CaptchaPhase, &j.ParsedSummary)
 	if err != nil {
 		return nil, fmt.Errorf("find job by receipt_id: %w", err)
 	}
@@ -148,16 +158,144 @@ func (q *JobQueries) GetByID(ctx context.Context, jobID int64) (*domain.Scraping
 	var j domain.ScrapingJob
 	err := q.db.Pool.QueryRow(ctx,
 		`SELECT id, house_id, submitted_by, fiscal_url, status, attempts,
-		        failure_reason, error_detail, receipt_id, created_at, started_at, completed_at
+		        failure_reason, error_detail, receipt_id, created_at, started_at, completed_at,
+		        captcha_current_url, captcha_session_cookies, captcha_pending_at, captcha_resumed_at, captcha_retry_count, captcha_user_agent,
+		        captcha_phase, parsed_summary
 		 FROM scraping_jobs
 		 WHERE id = $1`,
 		jobID,
 	).Scan(&j.ID, &j.HouseID, &j.SubmittedBy, &j.FiscalURL, &j.Status, &j.Attempts,
-		&j.FailureReason, &j.ErrorDetail, &j.ReceiptID, &j.CreatedAt, &j.StartedAt, &j.CompletedAt)
+		&j.FailureReason, &j.ErrorDetail, &j.ReceiptID, &j.CreatedAt, &j.StartedAt, &j.CompletedAt,
+		&j.CaptchaCurrentURL, &j.CaptchaSessionCookies, &j.CaptchaPendingAt, &j.CaptchaResumedAt, &j.CaptchaRetryCount, &j.CaptchaUserAgent,
+		&j.CaptchaPhase, &j.ParsedSummary)
 	if err != nil {
 		return nil, fmt.Errorf("get job by id: %w", err)
 	}
 	return &j, nil
+}
+
+// PauseJobForCaptcha atomically transitions a job from processing to awaiting_captcha,
+// persisting the current URL, browser session cookies, captcha phase, and optionally
+// the already-parsed summary payload (used when pausing during the detail page transition).
+func (q *JobQueries) PauseJobForCaptcha(ctx context.Context, jobID int64, currentURL string, cookies json.RawMessage, phase domain.CaptchaPhase, parsedSummary json.RawMessage) error {
+	var summaryArg interface{}
+	if len(parsedSummary) > 0 {
+		summaryArg = parsedSummary
+	}
+	_, err := q.db.Pool.Exec(ctx,
+		`UPDATE scraping_jobs
+		 SET status                  = 'awaiting_captcha',
+		     captcha_current_url     = $2,
+		     captcha_session_cookies = $3,
+		     captcha_phase           = $4,
+		     parsed_summary          = COALESCE($5, parsed_summary),
+		     captcha_pending_at      = NOW()
+		 WHERE id = $1 AND status = 'processing'`,
+		jobID, currentURL, cookies, string(phase), summaryArg,
+	)
+	if err != nil {
+		return fmt.Errorf("pause job for captcha: %w", err)
+	}
+	slog.Info("job paused for captcha", "job_id", jobID, "captcha_url", currentURL, "phase", phase)
+	return nil
+}
+
+// DeleteByIDAndHouse removes a receipt owned by the given house inside a transaction.
+// Associated items are removed by ON DELETE CASCADE and scraping job references are
+// cleared by the receipt_id foreign key ON DELETE SET NULL.
+func (q *ReceiptQueries) DeleteByIDAndHouse(ctx context.Context, receiptID, houseID int64) error {
+	tx, err := q.db.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin delete receipt transaction: %w", err)
+	}
+	defer func() {
+		// Ignore rollback error; commit makes this a no-op on the success path.
+		_ = tx.Rollback(ctx)
+	}()
+
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM receipts
+		 WHERE id = $1 AND house_id = $2`,
+		receiptID, houseID,
+	)
+	if err != nil {
+		return fmt.Errorf("delete receipt: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit delete receipt transaction: %w", err)
+	}
+
+	slog.Info("receipt deleted", "receipt_id", receiptID, "house_id", houseID)
+	return nil
+}
+
+// ResumeJobFromCaptcha validates the job is in awaiting_captcha, updates the cookies and
+// user agent, increments retry count, and transitions back to processing for re-dispatch.
+// userAgent is the browser UA sent by the mobile app; it is stored so the worker can
+// replay the request with the same UA that Cloudflare issued the session cookie for.
+func (q *JobQueries) ResumeJobFromCaptcha(ctx context.Context, jobID int64, cookies json.RawMessage, userAgent string) error {
+	var uaArg interface{}
+	if userAgent != "" {
+		uaArg = userAgent
+	}
+	tag, err := q.db.Pool.Exec(ctx,
+		`UPDATE scraping_jobs
+		 SET status                  = 'processing',
+		     captcha_session_cookies = $2,
+		     captcha_user_agent      = COALESCE($3, captcha_user_agent),
+		     captcha_resumed_at      = NOW(),
+		     captcha_retry_count     = captcha_retry_count + 1
+		 WHERE id = $1 AND status = 'awaiting_captcha'`,
+		jobID, cookies, uaArg,
+	)
+	if err != nil {
+		return fmt.Errorf("resume job from captcha: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("resume job from captcha: job %d is not in awaiting_captcha state", jobID)
+	}
+	slog.Info("job resumed from captcha", "job_id", jobID, "has_user_agent", userAgent != "")
+	return nil
+}
+
+// GetCaptchaContext returns the persisted SEFAZ URL needed to show the WebView to the user.
+func (q *JobQueries) GetCaptchaContext(ctx context.Context, jobID int64) (captchaURL string, retryCount int, err error) {
+	err = q.db.Pool.QueryRow(ctx,
+		`SELECT captcha_current_url, captcha_retry_count
+		 FROM scraping_jobs
+		 WHERE id = $1 AND status = 'awaiting_captcha'`,
+		jobID,
+	).Scan(&captchaURL, &retryCount)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return "", 0, fmt.Errorf("get captcha context: job %d is not in awaiting_captcha state", jobID)
+		}
+		return "", 0, fmt.Errorf("get captcha context: %w", err)
+	}
+	return captchaURL, retryCount, nil
+}
+
+// ExpireAwaitingCaptchaJobs marks as failed any jobs that have been in awaiting_captcha
+// longer than the given duration.
+func (q *JobQueries) ExpireAwaitingCaptchaJobs(ctx context.Context, olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-olderThan)
+	tag, err := q.db.Pool.Exec(ctx,
+		`UPDATE scraping_jobs
+		 SET status         = 'failed',
+		     failure_reason = 'captcha_timeout',
+		     error_detail   = 'captcha resolution not submitted within timeout',
+		     completed_at   = NOW()
+		 WHERE status = 'awaiting_captcha' AND captcha_pending_at < $1`,
+		cutoff,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("expire awaiting captcha jobs: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // CreateJob inserts a new scraping job.
@@ -267,7 +405,7 @@ func (q *ReceiptQueries) GetStoreByID(ctx context.Context, storeID int64) (*doma
 // GetItemsByReceiptID returns all items for a receipt.
 func (q *ReceiptQueries) GetItemsByReceiptID(ctx context.Context, receiptID int64) ([]domain.Item, error) {
 	rows, err := q.db.Pool.Query(ctx,
-		`SELECT id, receipt_id, description, quantity, unit, unit_price, total_price
+		`SELECT id, receipt_id, description, quantity, unit, unit_price, total_price, barcode
 		 FROM items
 		 WHERE receipt_id = $1
 		 ORDER BY id`,
@@ -282,7 +420,7 @@ func (q *ReceiptQueries) GetItemsByReceiptID(ctx context.Context, receiptID int6
 	for rows.Next() {
 		var it domain.Item
 		if err := rows.Scan(&it.ID, &it.ReceiptID, &it.Description, &it.Quantity,
-			&it.Unit, &it.UnitPrice, &it.TotalPrice); err != nil {
+			&it.Unit, &it.UnitPrice, &it.TotalPrice, &it.Barcode); err != nil {
 			return nil, fmt.Errorf("scan item row: %w", err)
 		}
 		items = append(items, it)
@@ -328,9 +466,9 @@ func (q *ReceiptQueries) CreateItems(ctx context.Context, items []domain.Item) e
 	batch := &pgx.Batch{}
 	for _, it := range items {
 		batch.Queue(
-			`INSERT INTO items (receipt_id, description, quantity, unit, unit_price, total_price)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
-			it.ReceiptID, it.Description, it.Quantity, it.Unit, it.UnitPrice, it.TotalPrice,
+			`INSERT INTO items (receipt_id, description, quantity, unit, unit_price, total_price, barcode)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			it.ReceiptID, it.Description, it.Quantity, it.Unit, it.UnitPrice, it.TotalPrice, it.Barcode,
 		)
 	}
 

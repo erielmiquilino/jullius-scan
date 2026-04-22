@@ -325,6 +325,10 @@ class _SubmitReceiptScreenState extends State<SubmitReceiptScreen> {
       case FailureReason.parsing:
         icon = Icons.code_off;
         color = Theme.of(context).colorScheme.error;
+      case FailureReason.captchaExpired:
+      case FailureReason.captchaTimeout:
+        icon = Icons.timer_off;
+        color = Colors.orange;
       case FailureReason.unknown:
       case null:
         icon = Icons.error_outline;
@@ -344,6 +348,10 @@ class _SubmitReceiptScreenState extends State<SubmitReceiptScreen> {
         return 'Navigation Failed';
       case FailureReason.parsing:
         return 'Parsing Failed';
+      case FailureReason.captchaExpired:
+        return 'Session Expired';
+      case FailureReason.captchaTimeout:
+        return 'Captcha Not Resolved';
       case FailureReason.unknown:
       case null:
         return 'Extraction Failed';
@@ -355,11 +363,15 @@ class _SubmitReceiptScreenState extends State<SubmitReceiptScreen> {
       case FailureReason.timeout:
         return 'The SEFAZ page took too long to respond. Please try again later.';
       case FailureReason.captcha:
-        return 'SEFAZ is showing a captcha challenge. This is a known limitation -- please try again later.';
+        return 'SEFAZ is showing a captcha challenge. Please try again later.';
       case FailureReason.navigation:
         return 'Could not navigate to the SEFAZ page. Please check the URL and try again.';
       case FailureReason.parsing:
         return 'The receipt data could not be extracted from the page. The page structure may have changed.';
+      case FailureReason.captchaExpired:
+        return 'The captcha session expired before being processed. Please try submitting the receipt again.';
+      case FailureReason.captchaTimeout:
+        return 'The captcha was not resolved within the time limit. Please try submitting again.';
       case FailureReason.unknown:
       case null:
         return 'An unexpected error occurred during extraction. Please try again.';

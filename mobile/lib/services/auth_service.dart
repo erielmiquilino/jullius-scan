@@ -3,16 +3,25 @@ import 'package:flutter/foundation.dart';
 
 /// Wraps Firebase Auth for sign-in, sign-out, and token retrieval.
 class AuthService extends ChangeNotifier {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseAuth? _auth;
 
-  User? get currentUser => _auth.currentUser;
+  AuthService({FirebaseAuth? auth}) : _auth = auth ?? FirebaseAuth.instance;
+
+  AuthService.test() : _auth = null;
+
+  User? get currentUser => _auth?.currentUser;
   bool get isSignedIn => currentUser != null;
 
-  Stream<User?> get authStateChanges => _auth.authStateChanges();
+  Stream<User?> get authStateChanges =>
+      _auth?.authStateChanges() ?? const Stream<User?>.empty();
 
   /// Sign in with email and password.
   /// Returns the signed-in [User] or throws on failure.
   Future<User> signInWithEmail(String email, String password) async {
+    if (_auth == null) {
+      throw StateError('AuthService.test does not support sign in');
+    }
+
     final credential = await _auth.signInWithEmailAndPassword(
       email: email,
       password: password,
@@ -29,7 +38,9 @@ class AuthService extends ChangeNotifier {
 
   /// Sign out the current user.
   Future<void> signOut() async {
-    await _auth.signOut();
+    if (_auth != null) {
+      await _auth.signOut();
+    }
     notifyListeners();
   }
 }

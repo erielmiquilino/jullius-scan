@@ -3,17 +3,25 @@ enum JobStatus {
   queued,
   processing,
   completed,
-  failed;
+  failed,
+  awaitingCaptcha,
+  unknown;
 
   static JobStatus fromString(String value) {
-    return JobStatus.values.firstWhere(
-      (s) => s.name == value,
-      orElse: () => JobStatus.queued,
-    );
+    const map = {
+      'queued': JobStatus.queued,
+      'processing': JobStatus.processing,
+      'completed': JobStatus.completed,
+      'failed': JobStatus.failed,
+      'awaiting_captcha': JobStatus.awaitingCaptcha,
+    };
+    return map[value] ?? JobStatus.unknown;
   }
 
-  bool get isTerminal => this == completed || this == failed;
+  bool get isTerminal =>
+      this == completed || this == failed || this == awaitingCaptcha;
   bool get isPending => this == queued || this == processing;
+  bool get needsCaptcha => this == awaitingCaptcha;
 }
 
 /// Failure reason for failed scraping jobs.
@@ -22,27 +30,38 @@ enum FailureReason {
   captcha,
   navigation,
   parsing,
-  unknown;
+  unknown,
+  captchaExpired,
+  captchaTimeout;
 
   static FailureReason fromString(String value) {
-    return FailureReason.values.firstWhere(
-      (r) => r.name == value,
-      orElse: () => FailureReason.unknown,
-    );
+    const map = {
+      'timeout': FailureReason.timeout,
+      'captcha': FailureReason.captcha,
+      'navigation': FailureReason.navigation,
+      'parsing': FailureReason.parsing,
+      'captcha_expired': FailureReason.captchaExpired,
+      'captcha_timeout': FailureReason.captchaTimeout,
+    };
+    return map[value] ?? FailureReason.unknown;
   }
 
   String get displayLabel {
     switch (this) {
       case FailureReason.timeout:
-        return 'Timeout';
+        return 'Tempo esgotado';
       case FailureReason.captcha:
-        return 'Captcha Blocked';
+        return 'Captcha Bloqueado';
       case FailureReason.navigation:
-        return 'Navigation Error';
+        return 'Erro de Navegação';
       case FailureReason.parsing:
-        return 'Parsing Error';
+        return 'Erro de Leitura';
+      case FailureReason.captchaExpired:
+        return 'Sessão Expirada';
+      case FailureReason.captchaTimeout:
+        return 'Captcha não Resolvido';
       case FailureReason.unknown:
-        return 'Unknown Error';
+        return 'Erro Desconhecido';
     }
   }
 }
@@ -60,6 +79,7 @@ class Job {
   final DateTime createdAt;
   final DateTime? startedAt;
   final DateTime? completedAt;
+  final DateTime? captchaPendingAt;
 
   const Job({
     required this.id,
@@ -73,6 +93,7 @@ class Job {
     required this.createdAt,
     this.startedAt,
     this.completedAt,
+    this.captchaPendingAt,
   });
 
   factory Job.fromJson(Map<String, dynamic> json) {
@@ -93,6 +114,9 @@ class Job {
           : null,
       completedAt: json['completed_at'] != null
           ? DateTime.parse(json['completed_at'] as String)
+          : null,
+      captchaPendingAt: json['captcha_pending_at'] != null
+          ? DateTime.parse(json['captcha_pending_at'] as String)
           : null,
     );
   }

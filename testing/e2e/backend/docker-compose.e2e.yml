@@ -35,6 +35,8 @@ services:
     volumes:
       - ./mocks/sefaz:/app/mocks:ro
       - ./mocks/sefaz/mock-server.js:/app/mock-server.js:ro
+    environment:
+      MOCK_HTML_DIR: /app/mocks
     ports:
       - "18091:8091"
     healthcheck:
@@ -63,6 +65,7 @@ services:
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-jullius-scan}
       FIREBASE_CREDENTIALS_JSON: ${FIREBASE_CREDENTIALS_JSON:-}
       MIGRATIONS_PATH: /app/migrations
+      CAPTCHA_TIMEOUT_MINUTES: "2"
     ports:
       - "18080:8080"
     healthcheck:
@@ -90,9 +93,10 @@ services:
       REDIS_PASSWORD: ""
       REDIS_DB: "0"
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-jullius-scan}
-      SCRAPE_TIMEOUT_SECONDS: "5"
+      SCRAPE_TIMEOUT_SECONDS: "30"
       MAX_RETRIES: "3"
       WORKER_POOL_SIZE: "1"
+      CAPTCHA_TIMEOUT_MINUTES: ${CAPTCHA_TIMEOUT_MINUTES:-2}
     healthcheck:
       test: ["CMD-SHELL", "ps -ef | grep '/app/worker' | grep -v grep >/dev/null"]
       interval: 5s

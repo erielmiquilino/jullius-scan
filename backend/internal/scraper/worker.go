@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -76,76 +77,237 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 // processJob handles a single scraping job with full lifecycle management.
-// It transitions the job through: queued -> processing -> completed/failed,
-// includes retry logic for transient failures, and detects captcha blocks.
 func (w *Worker) processJob(ctx context.Context, msg *queue.JobMessage) {
-	// Mark job as processing and increment attempt counter.
 	if err := w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusProcessing, nil, "", nil); err != nil {
-		slog.Error("failed to mark job as processing",
-			"job_id", msg.JobID,
-			"error", err,
-		)
+		slog.Error("failed to mark job as processing", "job_id", msg.JobID, "error", err)
 		return
 	}
 
-	// Create a timeout context for this specific job execution.
 	jobCtx, jobCancel := context.WithTimeout(ctx, w.config.ScrapeTimeout)
 	defer jobCancel()
 
-	// Execute browser automation.
-	result, err := w.executor.FetchPage(jobCtx, msg.FiscalURL)
+	if msg.IsResume {
+		w.processResume(ctx, jobCtx, msg)
+		return
+	}
+
+	// Fresh job: two-phase fetch (summary → detail in one browser session).
+	twoPhase, err := w.executor.FetchWithDetailPhase(jobCtx, msg.FiscalURL, nil, "")
 	if err != nil {
 		w.handleFailure(ctx, msg, err)
 		return
 	}
 
-	// Check for captcha/anti-bot block — terminal failure, no retry.
-	if DetectCaptcha(result) {
-		reason := domain.FailureCaptcha
-		_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,
-			"SEFAZ page presented a captcha or anti-bot challenge (accepted MVP limitation)", nil)
-		slog.Warn("job failed: captcha detected",
-			"job_id", msg.JobID,
-			"fiscal_url", msg.FiscalURL,
-		)
+	// Captcha on summary page.
+	if DetectCaptcha(twoPhase.Summary) {
+		w.handleCaptchaPause(ctx, msg, twoPhase.Summary, domain.CaptchaPhaseSummary, nil)
 		return
 	}
 
-	// Parse the extracted HTML into structured receipt data.
-	parsed, err := ParseSEFAZHTML(result.HTML)
+	parsed, err := ParseSEFAZHTML(twoPhase.Summary.HTML)
 	if err != nil {
 		w.handleParsingFailure(ctx, msg, err)
 		return
 	}
 
-	// Persist the extracted data.
+	// Captcha on detail page transition.
+	if twoPhase.DetailCaptcha {
+		parsedJSON, _ := json.Marshal(parsed)
+		w.handleCaptchaPause(ctx, msg, &ExecutorResult{FinalURL: twoPhase.DetailURL}, domain.CaptchaPhaseDetail, parsedJSON)
+		return
+	}
+
+	// Detail page available — enrich items with EAN.
+	if twoPhase.Detail != nil {
+		parsed.Items = enrichWithBarcodes(parsed.Items, twoPhase.Detail.HTML)
+	}
+
 	if err := w.persistReceipt(ctx, msg, parsed); err != nil {
 		reason := domain.FailureUnknown
 		_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,
 			fmt.Sprintf("failed to persist receipt: %v", err), nil)
-		slog.Error("job failed: persistence error",
-			"job_id", msg.JobID,
-			"error", err,
-		)
+		slog.Error("job failed: persistence error", "job_id", msg.JobID, "error", err)
 		return
 	}
 
-	slog.Info("job completed successfully",
+	slog.Info("job completed successfully", "job_id", msg.JobID, "fiscal_url", msg.FiscalURL)
+}
+
+// processResume handles the resume path after a captcha pause, branching on captcha_phase.
+func (w *Worker) processResume(ctx context.Context, jobCtx context.Context, msg *queue.JobMessage) {
+	job, err := w.jobs.GetByID(ctx, msg.JobID)
+	if err != nil {
+		slog.Error("resume: failed to load job", "job_id", msg.JobID, "error", err)
+		return
+	}
+
+	var cookies []BrowserCookie
+	if job.CaptchaSessionCookies != nil {
+		if err := json.Unmarshal(*job.CaptchaSessionCookies, &cookies); err != nil {
+			w.handleFailure(ctx, msg, fmt.Errorf("unmarshal stored cookies: %w", err))
+			return
+		}
+	}
+
+	ua := ""
+	if job.CaptchaUserAgent != nil {
+		ua = *job.CaptchaUserAgent
+	}
+
+	// Route by captcha phase.
+	if job.CaptchaPhase != nil && *job.CaptchaPhase == domain.CaptchaPhaseDetail {
+		w.resumeDetailPhase(ctx, jobCtx, msg, job, cookies, ua)
+		return
+	}
+
+	// Summary phase (or legacy NULL phase): resume from fiscal URL with injected cookies.
+	twoPhase, err := w.executor.FetchWithDetailPhase(jobCtx, msg.FiscalURL, cookies, ua)
+	if err != nil {
+		w.handleFailure(ctx, msg, err)
+		return
+	}
+
+	if DetectCaptcha(twoPhase.Summary) {
+		if job.CaptchaRetryCount >= 2 {
+			reason := domain.FailureCaptchaExpired
+			_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,
+				"captcha challenge persisted after human resolution; session may have expired", nil)
+			slog.Warn("job failed: captcha expired on resume", "job_id", msg.JobID)
+		} else {
+			w.handleCaptchaPause(ctx, msg, twoPhase.Summary, domain.CaptchaPhaseSummary, nil)
+		}
+		return
+	}
+
+	parsed, err := ParseSEFAZHTML(twoPhase.Summary.HTML)
+	if err != nil {
+		w.handleParsingFailure(ctx, msg, err)
+		return
+	}
+
+	if twoPhase.DetailCaptcha {
+		parsedJSON, _ := json.Marshal(parsed)
+		w.handleCaptchaPause(ctx, msg, &ExecutorResult{FinalURL: twoPhase.DetailURL}, domain.CaptchaPhaseDetail, parsedJSON)
+		return
+	}
+
+	if twoPhase.Detail != nil {
+		parsed.Items = enrichWithBarcodes(parsed.Items, twoPhase.Detail.HTML)
+	}
+
+	if err := w.persistReceipt(ctx, msg, parsed); err != nil {
+		reason := domain.FailureUnknown
+		_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,
+			fmt.Sprintf("failed to persist receipt: %v", err), nil)
+		slog.Error("job failed: persistence error", "job_id", msg.JobID, "error", err)
+	}
+}
+
+// resumeDetailPhase resumes a job that was paused during the summary→detail transition.
+// It navigates only to the detail page (using captcha_current_url), merges EANs onto
+// the persisted parsed_summary, and persists the final receipt.
+func (w *Worker) resumeDetailPhase(ctx context.Context, jobCtx context.Context, msg *queue.JobMessage, job *domain.ScrapingJob, cookies []BrowserCookie, ua string) {
+	if job.CaptchaCurrentURL == nil || *job.CaptchaCurrentURL == "" {
+		slog.Error("resume detail phase: captcha_current_url is empty", "job_id", msg.JobID)
+		w.handleFailure(ctx, msg, fmt.Errorf("detail-phase resume: captcha_current_url is empty"))
+		return
+	}
+
+	detailURL := *job.CaptchaCurrentURL
+	detailResult, err := w.executor.FetchPageWithCookies(jobCtx, detailURL, cookies, ua)
+	if err != nil {
+		w.handleFailure(ctx, msg, err)
+		return
+	}
+
+	if DetectCaptcha(detailResult) {
+		if job.CaptchaRetryCount >= 2 {
+			reason := domain.FailureCaptchaExpired
+			_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,
+				"captcha persisted on detail page after human resolution", nil)
+			slog.Warn("job failed: detail captcha expired on resume", "job_id", msg.JobID)
+		} else {
+			w.handleCaptchaPause(ctx, msg, detailResult, domain.CaptchaPhaseDetail, nil)
+		}
+		return
+	}
+
+	// Load the persisted summary payload.
+	if job.ParsedSummary == nil {
+		slog.Error("resume detail phase: parsed_summary is nil", "job_id", msg.JobID)
+		w.handleFailure(ctx, msg, fmt.Errorf("detail-phase resume: parsed_summary is missing"))
+		return
+	}
+
+	var parsed ParsedReceipt
+	if err := json.Unmarshal(*job.ParsedSummary, &parsed); err != nil {
+		w.handleFailure(ctx, msg, fmt.Errorf("detail-phase resume: unmarshal parsed_summary: %w", err))
+		return
+	}
+
+	parsed.Items = enrichWithBarcodes(parsed.Items, detailResult.HTML)
+
+	if err := w.persistReceipt(ctx, msg, &parsed); err != nil {
+		reason := domain.FailureUnknown
+		_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,
+			fmt.Sprintf("failed to persist receipt: %v", err), nil)
+		slog.Error("job failed: persistence error on detail resume", "job_id", msg.JobID, "error", err)
+		return
+	}
+
+	slog.Info("job completed via detail-phase resume", "job_id", msg.JobID)
+}
+
+// enrichWithBarcodes parses the detail page HTML, merges EAN codes into items by
+// positional index, and returns the (possibly mutated) items. On any error it logs
+// a warning and returns items unchanged — barcode enrichment is non-fatal.
+func enrichWithBarcodes(items []domain.Item, detailHTML string) []domain.Item {
+	barcodes, err := ParseDetailPage(detailHTML)
+	if err != nil {
+		slog.Warn("detail page: EAN extraction failed, items will have no barcode", "error", err)
+		return items
+	}
+
+	enriched, err := MergeBarcodes(items, barcodes)
+	if err != nil {
+		slog.Warn("detail page: barcode merge failed, items will have no barcode", "error", err)
+		return items
+	}
+
+	return enriched
+}
+
+// handleCaptchaPause pauses the job in awaiting_captcha, persisting URL, cookies, phase,
+// and optionally the already-parsed summary payload (for detail-phase pauses).
+func (w *Worker) handleCaptchaPause(ctx context.Context, msg *queue.JobMessage, result *ExecutorResult, phase domain.CaptchaPhase, parsedSummary json.RawMessage) {
+	cookiesJSON := json.RawMessage(`[]`)
+	currentURL := result.FinalURL
+	if currentURL == "" {
+		currentURL = msg.FiscalURL
+	}
+
+	if err := w.jobs.PauseJobForCaptcha(ctx, msg.JobID, currentURL, cookiesJSON, phase, parsedSummary); err != nil {
+		slog.Error("failed to pause job for captcha", "job_id", msg.JobID, "error", err)
+		reason := domain.FailureCaptcha
+		_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,
+			"captcha detected; failed to pause job", nil)
+		return
+	}
+	slog.Warn("job paused: captcha detected, awaiting user resolution",
 		"job_id", msg.JobID,
-		"fiscal_url", msg.FiscalURL,
+		"captcha_url", currentURL,
+		"phase", phase,
 	)
 }
 
 // persistReceipt saves the parsed receipt data (store, receipt, items) to PostgreSQL
 // and marks the job as completed.
 func (w *Worker) persistReceipt(ctx context.Context, msg *queue.JobMessage, parsed *ParsedReceipt) error {
-	// Upsert store (by CNPJ — avoids duplicates across receipts).
 	store := &parsed.Store
 	if err := w.receipts.UpsertStore(ctx, store); err != nil {
 		return fmt.Errorf("upsert store: %w", err)
 	}
 
-	// Create receipt linked to the House that submitted the job.
 	receipt := &domain.Receipt{
 		HouseID:     msg.HouseID,
 		StoreID:     store.ID,
@@ -158,7 +320,6 @@ func (w *Worker) persistReceipt(ctx context.Context, msg *queue.JobMessage, pars
 		return fmt.Errorf("create receipt: %w", err)
 	}
 
-	// Create line items linked to the receipt.
 	if len(parsed.Items) > 0 {
 		for i := range parsed.Items {
 			parsed.Items[i].ReceiptID = receipt.ID
@@ -168,7 +329,6 @@ func (w *Worker) persistReceipt(ctx context.Context, msg *queue.JobMessage, pars
 		}
 	}
 
-	// Mark job as completed with reference to the receipt.
 	if err := w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusCompleted, nil, "", &receipt.ID); err != nil {
 		return fmt.Errorf("update job status to completed: %w", err)
 	}
@@ -188,11 +348,8 @@ func (w *Worker) persistReceipt(ctx context.Context, msg *queue.JobMessage, pars
 func (w *Worker) handleFailure(ctx context.Context, msg *queue.JobMessage, err error) {
 	nextAttempt := msg.Attempt + 1
 
-	// Classify the failure. The error string from chromedp will contain
-	// "context deadline exceeded" if the job-level timeout fired.
 	isTimeout := isTimeoutError(err)
 
-	// Determine failure reason.
 	var reason domain.FailureReason
 	if isTimeout {
 		reason = domain.FailureTimeout
@@ -200,7 +357,6 @@ func (w *Worker) handleFailure(ctx context.Context, msg *queue.JobMessage, err e
 		reason = domain.FailureNavigation
 	}
 
-	// If we haven't exhausted retries, re-enqueue for another attempt.
 	if nextAttempt < w.config.MaxRetries {
 		retryMsg := queue.JobMessage{
 			JobID:     msg.JobID,
@@ -209,12 +365,10 @@ func (w *Worker) handleFailure(ctx context.Context, msg *queue.JobMessage, err e
 			Attempt:   nextAttempt,
 		}
 
-		// Reset job to queued for the retry.
 		_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusQueued, nil,
 			fmt.Sprintf("attempt %d failed: %v — retrying", nextAttempt, err), nil)
 
 		if enqErr := w.queue.Enqueue(ctx, retryMsg); enqErr != nil {
-			// Can't re-enqueue — mark as terminal failure.
 			_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,
 				fmt.Sprintf("attempt %d failed: %v — re-enqueue also failed: %v", nextAttempt, err, enqErr), nil)
 			slog.Error("job failed: could not re-enqueue for retry",
@@ -235,7 +389,6 @@ func (w *Worker) handleFailure(ctx context.Context, msg *queue.JobMessage, err e
 		return
 	}
 
-	// Max retries exhausted — terminal failure.
 	_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,
 		fmt.Sprintf("all %d attempts exhausted: %v", w.config.MaxRetries, err), nil)
 	slog.Error("job failed: max retries exhausted",
@@ -246,8 +399,8 @@ func (w *Worker) handleFailure(ctx context.Context, msg *queue.JobMessage, err e
 	)
 }
 
-// handleParsingFailure processes a parsing error — parsing failures are not retried
-// since the same HTML would produce the same error.
+// handleParsingFailure processes a parsing error — not retried since the same HTML
+// would produce the same error.
 func (w *Worker) handleParsingFailure(ctx context.Context, msg *queue.JobMessage, err error) {
 	reason := domain.FailureParsing
 	_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,

@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
+import 'package:jullius_scan/features/jobs/job_tracking_screen.dart';
+import 'package:jullius_scan/features/scanner/qr_scanner_screen.dart';
 import 'package:jullius_scan/models/api_error.dart';
 import 'package:jullius_scan/models/receipt.dart';
 import 'package:jullius_scan/services/api_client.dart';
 import 'package:jullius_scan/services/auth_service.dart';
 import 'package:jullius_scan/screens/receipt_detail_screen.dart';
-import 'package:jullius_scan/screens/submit_receipt_screen.dart';
 
 /// Main screen showing the list of receipts for the user's house.
 class HomeScreen extends StatefulWidget {
@@ -52,7 +53,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) {
         setState(() {
           _error = e.isNotProvisioned
-              ? 'Your account is not provisioned for any house. Contact the administrator.'
+              ? 'Sua conta não está associada a nenhuma residência. Entre em contato com o administrador.'
               : e.message;
           _loading = false;
         });
@@ -60,27 +61,53 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = 'Failed to load receipts. Pull to refresh.';
+          _error = 'Falha ao carregar os recibos. Puxe para atualizar.';
           _loading = false;
         });
       }
     }
   }
 
-  Future<void> _navigateToSubmit() async {
-    final submitted = await Navigator.push<bool>(
+  Future<void> _navigateToScan() async {
+    // Step 1: scan QR code (or paste URL manually).
+    final fiscalUrl = await Navigator.push<String>(
       context,
-      MaterialPageRoute(
-        builder: (_) => SubmitReceiptScreen(apiClient: widget.apiClient),
-      ),
+      MaterialPageRoute(builder: (_) => const QrScannerScreen()),
     );
-    if (submitted == true) {
-      _loadReceipts();
+    if (fiscalUrl == null || !mounted) return;
+
+    // Step 2: submit the URL to the backend.
+    try {
+      final response = await widget.apiClient.submitReceipt(fiscalUrl);
+
+      if (!mounted) return;
+
+      // Step 3: track the job (handles captcha pause transparently).
+      final completed = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => JobTrackingScreen(
+            jobId: response.jobId,
+            apiClient: widget.apiClient,
+          ),
+        ),
+      );
+      if (completed == true) _loadReceipts();
+    } on ApiError catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erro ao enviar nota: $e')),
+      );
     }
   }
 
-  void _navigateToDetail(Receipt receipt) {
-    Navigator.push(
+  Future<void> _navigateToDetail(Receipt receipt) async {
+    final deleted = await Navigator.push<bool>(
       context,
       MaterialPageRoute(
         builder: (_) => ReceiptDetailScreen(
@@ -89,6 +116,10 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+
+    if (deleted == true && mounted) {
+      _loadReceipts();
+    }
   }
 
   @override
@@ -102,16 +133,16 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
-            tooltip: 'Sign out',
+            tooltip: 'Sair',
             onPressed: () => widget.authService.signOut(),
           ),
         ],
       ),
       body: _buildBody(currencyFormat, dateFormat),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _navigateToSubmit,
+        onPressed: _navigateToScan,
         icon: const Icon(Icons.qr_code_scanner),
-        label: const Text('Scan Receipt'),
+        label: const Text('Escanear NFC-e'),
       ),
     );
   }
@@ -135,7 +166,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 16),
               FilledButton.tonal(
                 onPressed: _loadReceipts,
-                child: const Text('Try Again'),
+                child: const Text('Tentar novamente'),
               ),
             ],
           ),
@@ -155,12 +186,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   color: Theme.of(context).colorScheme.onSurfaceVariant),
               const SizedBox(height: 16),
               Text(
-                'No receipts yet',
+                'Nenhum recibo ainda',
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               const SizedBox(height: 8),
               Text(
-                'Tap "Scan Receipt" to submit your first fiscal URL.',
+                'Toque em "Escanear NFC-e" para registrar sua primeira nota fiscal.',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: Theme.of(context).colorScheme.onSurfaceVariant,

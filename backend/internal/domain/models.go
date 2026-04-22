@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"time"
 )
 
@@ -8,21 +9,24 @@ import (
 type JobStatus string
 
 const (
-	JobStatusQueued     JobStatus = "queued"
-	JobStatusProcessing JobStatus = "processing"
-	JobStatusCompleted  JobStatus = "completed"
-	JobStatusFailed     JobStatus = "failed"
+	JobStatusQueued          JobStatus = "queued"
+	JobStatusProcessing      JobStatus = "processing"
+	JobStatusCompleted       JobStatus = "completed"
+	JobStatusFailed          JobStatus = "failed"
+	JobStatusAwaitingCaptcha JobStatus = "awaiting_captcha"
 )
 
 // FailureReason categorizes why a scraping job failed.
 type FailureReason string
 
 const (
-	FailureTimeout     FailureReason = "timeout"
-	FailureCaptcha     FailureReason = "captcha"
-	FailureNavigation  FailureReason = "navigation"
-	FailureParsing     FailureReason = "parsing"
-	FailureUnknown     FailureReason = "unknown"
+	FailureTimeout        FailureReason = "timeout"
+	FailureCaptcha        FailureReason = "captcha"
+	FailureNavigation     FailureReason = "navigation"
+	FailureParsing        FailureReason = "parsing"
+	FailureUnknown        FailureReason = "unknown"
+	FailureCaptchaExpired FailureReason = "captcha_expired"
+	FailureCaptchaTimeout FailureReason = "captcha_timeout"
 )
 
 // User represents an authenticated user linked to Firebase Auth.
@@ -71,6 +75,14 @@ type Receipt struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// CaptchaPhase identifies where in the scraping pipeline a job was paused for captcha.
+type CaptchaPhase string
+
+const (
+	CaptchaPhaseSummary CaptchaPhase = "summary"
+	CaptchaPhaseDetail  CaptchaPhase = "detail"
+)
+
 // Item represents a line item in a receipt.
 type Item struct {
 	ID          int64   `json:"id"`
@@ -80,6 +92,7 @@ type Item struct {
 	Unit        string  `json:"unit"`
 	UnitPrice   float64 `json:"unit_price"`
 	TotalPrice  float64 `json:"total_price"`
+	Barcode     *string `json:"barcode,omitempty"`
 }
 
 // ScrapingJob represents an asynchronous scraping task.
@@ -96,4 +109,22 @@ type ScrapingJob struct {
 	CreatedAt     time.Time      `json:"created_at"`
 	StartedAt     *time.Time     `json:"started_at,omitempty"`
 	CompletedAt   *time.Time     `json:"completed_at,omitempty"`
+
+	// Captcha pause/resume fields — populated only when status is awaiting_captcha.
+	CaptchaCurrentURL     *string          `json:"captcha_current_url,omitempty"`
+	CaptchaSessionCookies *json.RawMessage `json:"captcha_session_cookies,omitempty"`
+	CaptchaPendingAt      *time.Time       `json:"captcha_pending_at,omitempty"`
+	CaptchaResumedAt      *time.Time       `json:"captcha_resumed_at,omitempty"`
+	CaptchaRetryCount     int              `json:"captcha_retry_count,omitempty"`
+	// UA sent by the mobile app when submitting captcha cookies; used by the worker
+	// to replay the session with the same user-agent that Cloudflare issued the cookie for.
+	CaptchaUserAgent *string `json:"captcha_user_agent,omitempty"`
+
+	// CaptchaPhase records whether the job was paused at the summary page or the
+	// detail page transition. NULL / empty means summary (legacy behavior).
+	CaptchaPhase *CaptchaPhase `json:"captcha_phase,omitempty"`
+	// ParsedSummary holds the already-parsed summary payload (store + receipt + items
+	// without barcode) as JSON, so on a detail-phase resume the worker can skip
+	// re-scraping the summary page.
+	ParsedSummary *json.RawMessage `json:"parsed_summary,omitempty"`
 }

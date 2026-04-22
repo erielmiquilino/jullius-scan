@@ -1,11 +1,14 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import type { APIRequestContext } from "@playwright/test";
-import type { JobResponse } from "./types";
+import type { JobResponse, JobStatus } from "./types";
 
 interface PollOptions {
   timeoutMs?: number;
   intervalMs?: number;
+  terminalStatuses?: JobStatus[];
 }
+
+const defaultTerminalStatuses: JobStatus[] = ["completed", "failed", "awaiting_captcha"];
 
 export async function pollJobUntilTerminal(
   request: APIRequestContext,
@@ -15,6 +18,7 @@ export async function pollJobUntilTerminal(
 ): Promise<JobResponse> {
   const timeoutMs = options.timeoutMs ?? 30_000;
   const intervalMs = options.intervalMs ?? 1_000;
+  const terminal = options.terminalStatuses ?? defaultTerminalStatuses;
   const start = Date.now();
   let lastBody = "";
 
@@ -28,7 +32,7 @@ export async function pollJobUntilTerminal(
     }
 
     const job = JSON.parse(lastBody) as JobResponse;
-    if (job.status === "completed" || job.status === "failed") {
+    if ((terminal as string[]).includes(job.status)) {
       return job;
     }
 

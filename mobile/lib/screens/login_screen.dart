@@ -42,7 +42,7 @@ class _LoginScreenState extends State<LoginScreen> {
     } on ApiError catch (e) {
       setState(() => _error = e.message);
     } catch (e) {
-      setState(() => _error = 'Sign-in failed. Please try again.');
+      setState(() => _error = 'Falha no login. Tente novamente.');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -51,16 +51,16 @@ class _LoginScreenState extends State<LoginScreen> {
   String _firebaseErrorMessage(String code) {
     switch (code) {
       case 'user-not-found':
-        return 'No account found with this email.';
+        return 'Nenhuma conta encontrada com este e-mail.';
       case 'wrong-password':
       case 'invalid-credential':
-        return 'Invalid email or password.';
+        return 'E-mail ou senha inválidos.';
       case 'user-disabled':
-        return 'This account has been disabled.';
+        return 'Esta conta foi desativada.';
       case 'too-many-requests':
-        return 'Too many attempts. Please wait and try again.';
+        return 'Muitas tentativas. Aguarde e tente novamente.';
       default:
-        return 'Sign-in failed. Please try again.';
+        return 'Falha no login. Tente novamente.';
     }
   }
 
@@ -97,7 +97,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Sign in to continue',
+                    'Faça login para continuar',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
@@ -113,7 +113,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       prefixIcon: Icon(Icons.email_outlined),
                     ),
                     validator: (v) =>
-                        (v == null || v.trim().isEmpty) ? 'Email is required' : null,
+                        (v == null || v.trim().isEmpty) ? 'E-mail é obrigatório' : null,
                   ),
                   const SizedBox(height: 16),
                   TextFormField(
@@ -122,12 +122,12 @@ class _LoginScreenState extends State<LoginScreen> {
                     textInputAction: TextInputAction.done,
                     onFieldSubmitted: (_) => _signIn(),
                     decoration: const InputDecoration(
-                      labelText: 'Password',
+                      labelText: 'Senha',
                       border: OutlineInputBorder(),
                       prefixIcon: Icon(Icons.lock_outlined),
                     ),
                     validator: (v) =>
-                        (v == null || v.isEmpty) ? 'Password is required' : null,
+                        (v == null || v.isEmpty) ? 'Senha é obrigatória' : null,
                   ),
                   if (_error != null) ...[
                     const SizedBox(height: 16),
@@ -165,7 +165,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               width: 20,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Text('Sign In'),
+                          : const Text('Entrar'),
                     ),
                   ),
                 ],

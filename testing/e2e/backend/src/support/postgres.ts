@@ -67,7 +67,7 @@ export class PostgresHelper {
 
   async getJob(jobId: number): Promise<DatabaseJobRow | null> {
     const result = await this.client.query<DatabaseJobRow>(
-      `SELECT id, house_id::bigint AS house_id, submitted_by::bigint AS submitted_by, fiscal_url, status, attempts, failure_reason, error_detail, receipt_id::bigint AS receipt_id
+      `SELECT id, house_id::bigint AS house_id, submitted_by::bigint AS submitted_by, fiscal_url, status, attempts, failure_reason, error_detail, receipt_id::bigint AS receipt_id, captcha_phase
        FROM scraping_jobs
        WHERE id = $1`,
       [jobId],
@@ -107,7 +107,7 @@ export class PostgresHelper {
 
   async getItemsByReceiptId(receiptId: number): Promise<DatabaseItemRow[]> {
     const result = await this.client.query<DatabaseItemRow>(
-      `SELECT id, receipt_id::bigint AS receipt_id, description, quantity::float8 AS quantity, unit, unit_price::float8 AS unit_price, total_price::float8 AS total_price
+      `SELECT id, receipt_id::bigint AS receipt_id, description, quantity::float8 AS quantity, unit, unit_price::float8 AS unit_price, total_price::float8 AS total_price, barcode
        FROM items
        WHERE receipt_id = $1
        ORDER BY id`,

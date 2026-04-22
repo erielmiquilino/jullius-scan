@@ -45,5 +45,7 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Necessário para escanear o QR code do cupom fiscal NFC-e.</string>
 </dict>
 </plist>

@@ -2,7 +2,7 @@ import { test, expect } from "../fixtures";
 import type { SubmitReceiptResponse } from "../../src/support/types";
 import { pollJobUntilTerminal } from "../../src/support/polling";
 
-test("marks the job as failed when the SEFAZ page indicates captcha", async ({ api, bearerToken }) => {
+test("pauses the job for captcha resolution when SEFAZ page shows captcha", async ({ api, bearerToken, state: _state }) => {
   const submit = await api.post("/api/v1/receipts", {
     headers: { Authorization: `Bearer ${bearerToken}` },
     data: { fiscal_url: "http://sefaz-mock:8091/captcha.html" },
@@ -12,6 +12,5 @@ test("marks the job as failed when the SEFAZ page indicates captcha", async ({ a
   const payload = (await submit.json()) as SubmitReceiptResponse;
 
   const job = await pollJobUntilTerminal(api, payload.job_id, bearerToken, { timeoutMs: 30_000, intervalMs: 1_000 });
-  expect(job.status).toBe("failed");
-  expect(job.failure_reason).toBe("captcha");
+  expect(job.status).toBe("awaiting_captcha");
 });

@@ -39,9 +39,12 @@ func NewRouter(db *database.DB, q *queue.Client, auth *middleware.FirebaseAuth) 
 		r.Post("/receipts", h.SubmitReceipt)
 		r.Get("/receipts", h.ListReceipts)
 		r.Get("/receipts/{id}", h.GetReceipt)
+		r.Delete("/receipts/{id}", h.DeleteReceipt)
 
 		// Job endpoints
 		r.Get("/jobs/{id}", h.GetJob)
+		r.Get("/jobs/{id}/captcha", h.GetCaptchaContext)
+		r.Post("/jobs/{id}/captcha/resume", h.ResumeCaptcha)
 	})
 
 	return r

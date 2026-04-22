@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -172,14 +173,20 @@ func extractFiscalKey(html string) (string, error) {
 var (
 	// Total amount: look for "Total" or "Valor Total" followed by a BRL currency value.
 	totalRegex = regexp.MustCompile(`(?i)(?:Valor\s+Total|Total\s+(?:da\s+)?(?:Nota|NFC-?e))\s*[:\s]*R?\$?\s*([\d.,]+)`)
+	// SC SEFAZ: <span class="totalNumb txtMax">VALUE</span> marks the payable total.
+	totalNumbMaxRegex = regexp.MustCompile(`(?i)<span[^>]*class="[^"]*totalNumb\s+txtMax[^"]*"[^>]*>([\d.,]+)`)
 )
 
 func extractTotalAmount(html string) (float64, error) {
 	match := totalRegex.FindStringSubmatch(html)
-	if len(match) < 2 {
-		return 0, fmt.Errorf("total amount not found")
+	if len(match) >= 2 {
+		return parseBRLAmount(match[1])
 	}
-	return parseBRLAmount(match[1])
+	match = totalNumbMaxRegex.FindStringSubmatch(html)
+	if len(match) >= 2 {
+		return parseBRLAmount(match[1])
+	}
+	return 0, fmt.Errorf("total amount not found")
 }
 
 // parseBRLAmount converts a Brazilian currency string (1.234,56) to float64.
@@ -241,9 +248,10 @@ var (
 	// Items in NFC-e pages are typically in a table or repeated div structure.
 	// Common patterns: description, quantity, unit, unit price, total price.
 	//
-	// Pattern: look for rows with item data. SEFAZ pages vary, so we use
-	// a flexible pattern that matches common table-row or div-based layouts.
-	itemRowRegex = regexp.MustCompile(`(?is)<tr[^>]*class="[^"]*(?:item|prod)[^"]*"[^>]*>(.*?)</tr>`)
+	// Matches rows by class (RS/RJ style) or by id containing "Item" (SC style).
+	itemRowRegex = regexp.MustCompile(`(?is)<tr[^>]*(?:class="[^"]*(?:item|prod)[^"]*"|id="[^"]*[Ii]tem[^"]*")[^>]*>(.*?)</tr>`)
+	// SC SEFAZ: item total value lives in <span class="valor">.
+	itemValorRegex = regexp.MustCompile(`(?i)<span[^>]*class="valor"[^>]*>([\d.,]+)`)
 
 	// Extract individual fields from within an item row.
 	itemDescRegex  = regexp.MustCompile(`(?is)<(?:span|td)[^>]*class="[^"]*(?:txtTit|descricao|desc|produto)[^"]*"[^>]*>([^<]+)`)
@@ -251,6 +259,18 @@ var (
 	itemUnitRegex  = regexp.MustCompile(`(?i)(?:UN|Unid|Unidade)[.:]?\s*(\S+)`)
 	itemPriceRegex = regexp.MustCompile(`(?i)(?:Vl\.?\s*Unit|Unitário|Unit)[.:]?\s*R?\$?\s*([\d.,]+)`)
 	itemTotalRegex = regexp.MustCompile(`(?i)(?:Vl\.?\s*Total|Total)[.:]?\s*R?\$?\s*([\d.,]+)`)
+
+	// SC SEFAZ puts labels inside <strong>…</strong> and values immediately after.
+	// e.g. <strong>Qtde.:</strong>0,875  <strong>UN: </strong>KG  <strong>Vl. Unit.:</strong>&#160;3,99
+	//
+	// The gap between </strong> and the value may be empty, whitespace, or an
+	// HTML entity such as &#160; / &nbsp;. It must NOT be `[^<]*` — that is
+	// greedy and consumes the number itself, backtracking only one char and
+	// capturing just the last digit (e.g. "9" instead of "13,99").
+	scGapPattern     = `(?:\s|&[^;\s]+;)*`
+	itemSCQtyRegex   = regexp.MustCompile(`(?i)<span[^>]*class="Rqtd"[^>]*>.*?</strong>` + scGapPattern + `([\d.,]+)`)
+	itemSCUnitRegex  = regexp.MustCompile(`(?i)<span[^>]*class="RUN"[^>]*>.*?</strong>` + scGapPattern + `(\S+?)\s*</span>`)
+	itemSCPriceRegex = regexp.MustCompile(`(?is)<span[^>]*class="RvlUnit"[^>]*>.*?</strong>` + scGapPattern + `([\d.,]+)`)
 )
 
 func extractItems(html string) ([]domain.Item, error) {
@@ -278,34 +298,45 @@ func extractItems(html string) ([]domain.Item, error) {
 			continue // skip rows without a description
 		}
 
-		// Quantity
-		qtyMatch := itemQtyRegex.FindStringSubmatch(rowHTML)
-		if len(qtyMatch) >= 2 {
+		// SC-specific regexes are tried first because SC's HTML contains tokens
+		// like `class="Rqtd"` / `class="RUN"` / `class="RvlUnit"` that would
+		// otherwise be captured (as garbage) by the lenient generic regexes.
+		// The SC regexes are scoped to their CSS class so they never match on
+		// non-SC HTML, meaning the generic fallback still covers other states.
+
+		// Quantity.
+		if m := itemSCQtyRegex.FindStringSubmatch(rowHTML); len(m) >= 2 {
+			item.Quantity, _ = parseBRLAmount(m[1])
+		} else if qtyMatch := itemQtyRegex.FindStringSubmatch(rowHTML); len(qtyMatch) >= 2 {
 			item.Quantity, _ = parseBRLAmount(qtyMatch[1])
 		}
 		if item.Quantity == 0 {
 			item.Quantity = 1
 		}
 
-		// Unit
-		unitMatch := itemUnitRegex.FindStringSubmatch(rowHTML)
-		if len(unitMatch) >= 2 {
+		// Unit.
+		if m := itemSCUnitRegex.FindStringSubmatch(rowHTML); len(m) >= 2 {
+			item.Unit = strings.TrimSpace(m[1])
+		} else if unitMatch := itemUnitRegex.FindStringSubmatch(rowHTML); len(unitMatch) >= 2 {
 			item.Unit = strings.TrimSpace(unitMatch[1])
 		}
 		if item.Unit == "" {
 			item.Unit = "UN"
 		}
 
-		// Unit price
-		priceMatch := itemPriceRegex.FindStringSubmatch(rowHTML)
-		if len(priceMatch) >= 2 {
+		// Unit price.
+		if m := itemSCPriceRegex.FindStringSubmatch(rowHTML); len(m) >= 2 {
+			item.UnitPrice, _ = parseBRLAmount(m[1])
+		} else if priceMatch := itemPriceRegex.FindStringSubmatch(rowHTML); len(priceMatch) >= 2 {
 			item.UnitPrice, _ = parseBRLAmount(priceMatch[1])
 		}
 
-		// Total price
+		// Total price — try labeled pattern first, then SC's <span class="valor">.
 		totalMatch := itemTotalRegex.FindStringSubmatch(rowHTML)
 		if len(totalMatch) >= 2 {
 			item.TotalPrice, _ = parseBRLAmount(totalMatch[1])
+		} else if m := itemValorRegex.FindStringSubmatch(rowHTML); len(m) >= 2 {
+			item.TotalPrice, _ = parseBRLAmount(m[1])
 		}
 
 		// If we have unit price but no total, calculate it.
@@ -386,5 +417,129 @@ func extractItemsDivBased(html string) ([]domain.Item, error) {
 		return nil, fmt.Errorf("no items extracted from div blocks")
 	}
 
+	return items, nil
+}
+
+// --- Detail page (Nfe_DetalheCert.aspx) ---
+
+var (
+	// "Ver NFC-e detalhada" anchor on the summary page.
+	// Captures the href which may be relative (e.g. /tax.NET/Sat.NFe.Web/Consultas/Nfe_DetalheCert.aspx?rq=TOKEN).
+	detailLinkRegex = regexp.MustCompile(`(?i)href="([^"]*Nfe_DetalheCert\.aspx[^"]*)"`)
+
+	// Fallback: button onclick with window.location or similar JS navigation.
+	detailOnclickRegex = regexp.MustCompile(`(?i)(?:window\.location|location\.href)\s*=\s*['"]([^'"]*Nfe_DetalheCert\.aspx[^'"]*)['"]\s*;`)
+
+	// Fallback: match any <a> whose visible text is "Ver NFC-e detalhada" regardless of href.
+	detailLinkTextRegex = regexp.MustCompile(`(?is)<a\b[^>]*href="([^"]+)"[^>]*>\s*Ver\s+NF[Cc]-e\s+detalhada\s*</a>`)
+
+	// EAN Comercial: label in one cell, value in the next cell.
+	// The value is either digits (EAN-8/13) or "SEM GTIN" (no barcode).
+	detailEANComercialRegex = regexp.MustCompile(`(?is)C[oó]digo\s+EAN\s+Comercial\s*(?:</[^>]+>\s*<[^>]+>|[:\s]+)\s*(SEM\s+GTIN|[\d]+)`)
+
+	// Fallback: EAN Tributável, same pattern.
+	detailEANTributavelRegex = regexp.MustCompile(`(?is)C[oó]digo\s+EAN\s+Tribut[aá]vel\s*(?:</[^>]+>\s*<[^>]+>|[:\s]+)\s*(SEM\s+GTIN|[\d]+)`)
+)
+
+// ExtractDetailLink finds the URL of the "Ver NFC-e detalhada" link in the NFC-e
+// summary page HTML and returns it as an absolute URL given the baseURL of the summary page.
+// Returns an error if no such link is found.
+func ExtractDetailLink(summaryHTML, baseURL string) (string, error) {
+	if m := detailLinkRegex.FindStringSubmatch(summaryHTML); len(m) >= 2 {
+		return makeAbsoluteURL(m[1], baseURL), nil
+	}
+	if m := detailOnclickRegex.FindStringSubmatch(summaryHTML); len(m) >= 2 {
+		return makeAbsoluteURL(m[1], baseURL), nil
+	}
+	if m := detailLinkTextRegex.FindStringSubmatch(summaryHTML); len(m) >= 2 {
+		return makeAbsoluteURL(m[1], baseURL), nil
+	}
+	return "", fmt.Errorf("detail page link (Nfe_DetalheCert.aspx) not found in summary HTML")
+}
+
+// makeAbsoluteURL resolves href relative to baseURL.
+// If href already starts with "http", it is returned unchanged.
+func makeAbsoluteURL(href, baseURL string) string {
+	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+		return href
+	}
+	// Derive scheme+host from baseURL.
+	schemeEnd := strings.Index(baseURL, "://")
+	if schemeEnd < 0 {
+		return href
+	}
+	hostEnd := strings.Index(baseURL[schemeEnd+3:], "/")
+	if hostEnd < 0 {
+		return baseURL + href
+	}
+	origin := baseURL[:schemeEnd+3+hostEnd]
+	if strings.HasPrefix(href, "/") {
+		return origin + href
+	}
+	// relative path — strip last path segment from base
+	lastSlash := strings.LastIndex(baseURL, "/")
+	if lastSlash < 0 {
+		return href
+	}
+	return baseURL[:lastSlash+1] + href
+}
+
+// ParseDetailPage extracts EAN codes from the NFC-e detail consultation page HTML.
+// It returns a slice of EAN strings in item order (same position = same item as summary).
+// Items without EAN yield an empty string entry; the function never returns an error for
+// individual missing EANs.
+func ParseDetailPage(detailHTML string) ([]string, error) {
+	if strings.TrimSpace(detailHTML) == "" {
+		return nil, fmt.Errorf("empty detail page HTML")
+	}
+
+	// Split the HTML into per-item blocks delimited by each EAN Comercial occurrence.
+	// Strategy: find ALL EAN Comercial + EAN Tributável pairs in document order.
+	comercialMatches := detailEANComercialRegex.FindAllStringSubmatch(detailHTML, -1)
+	tributavelMatches := detailEANTributavelRegex.FindAllStringSubmatch(detailHTML, -1)
+
+	count := len(comercialMatches)
+	if count == 0 {
+		// If neither field is present at all, the page may not be fully rendered.
+		return nil, fmt.Errorf("no EAN Comercial fields found in detail page HTML")
+	}
+
+	barcodes := make([]string, count)
+	for i, m := range comercialMatches {
+		if len(m) >= 2 {
+			raw := strings.TrimSpace(m[1])
+			if !strings.EqualFold(raw, "SEM GTIN") && raw != "" {
+				barcodes[i] = raw
+			}
+		}
+		// Fallback to Tributável if Comercial was empty / SEM GTIN.
+		if barcodes[i] == "" && i < len(tributavelMatches) {
+			if tv := tributavelMatches[i]; len(tv) >= 2 {
+				raw := strings.TrimSpace(tv[1])
+				if !strings.EqualFold(raw, "SEM GTIN") && raw != "" {
+					barcodes[i] = raw
+				}
+			}
+		}
+	}
+
+	slog.Info("detail page parsed", "ean_count", count)
+	return barcodes, nil
+}
+
+// MergeBarcodes assigns EAN codes from the detail page into the corresponding items
+// parsed from the summary page, matching by positional index.
+// Returns an error (without modifying items) if slice lengths differ, because a
+// mismatch suggests a page structure change that would cause incorrect associations.
+func MergeBarcodes(items []domain.Item, barcodes []string) ([]domain.Item, error) {
+	if len(items) != len(barcodes) {
+		return items, fmt.Errorf("merge barcodes: item count (%d) != barcode count (%d); skipping merge", len(items), len(barcodes))
+	}
+	for i := range items {
+		if barcodes[i] != "" {
+			b := barcodes[i]
+			items[i].Barcode = &b
+		}
+	}
 	return items, nil
 }

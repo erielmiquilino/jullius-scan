@@ -23,6 +23,7 @@ class ReceiptDetailScreen extends StatefulWidget {
 class _ReceiptDetailScreenState extends State<ReceiptDetailScreen> {
   Receipt? _receipt;
   bool _loading = true;
+  bool _deleting = false;
   String? _error;
 
   @override
@@ -48,14 +49,89 @@ class _ReceiptDetailScreenState extends State<ReceiptDetailScreen> {
     } on ApiError catch (e) {
       if (mounted) setState(() { _error = e.message; _loading = false; });
     } catch (e) {
-      if (mounted) setState(() { _error = 'Failed to load receipt.'; _loading = false; });
+      if (mounted) setState(() { _error = 'Falha ao carregar o recibo.'; _loading = false; });
+    }
+  }
+
+  Future<void> _confirmDelete() async {
+    if (_receipt == null || _deleting) return;
+
+    final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Remover lançamento?'),
+            content: const Text('Deseja mesmo remover este lançamento?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancelar'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Remover'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!confirmed || !mounted) return;
+
+    await _deleteReceipt();
+  }
+
+  Future<void> _deleteReceipt() async {
+    setState(() {
+      _deleting = true;
+    });
+
+    try {
+      await widget.apiClient.deleteReceipt(widget.receiptId);
+      if (!mounted) return;
+      Navigator.pop(context, true);
+    } on ApiError catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _deleting = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _deleting = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Falha ao remover o lançamento.')),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Receipt Details')),
+      appBar: AppBar(
+        title: const Text('Detalhes do Recibo'),
+        actions: [
+          if (_receipt != null)
+            if (_deleting)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              )
+            else
+              IconButton(
+                onPressed: _confirmDelete,
+                tooltip: 'Remover lançamento',
+                icon: const Icon(Icons.delete_outline),
+              ),
+        ],
+      ),
       body: _buildBody(context),
     );
   }
@@ -74,7 +150,7 @@ class _ReceiptDetailScreenState extends State<ReceiptDetailScreen> {
             Text(_error!),
             const SizedBox(height: 16),
             FilledButton.tonal(
-                onPressed: _loadReceipt, child: const Text('Try Again')),
+                onPressed: _loadReceipt, child: const Text('Tentar novamente')),
           ],
         ),
       );
@@ -116,7 +192,7 @@ class _ReceiptDetailScreenState extends State<ReceiptDetailScreen> {
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      Text('Issued',
+                      Text('Emitido em',
                           style: Theme.of(context).textTheme.labelMedium),
                       Text(dateFormat.format(receipt.issuedAt.toLocal())),
                     ],
@@ -129,7 +205,7 @@ class _ReceiptDetailScreenState extends State<ReceiptDetailScreen> {
           // Store
           if (receipt.store != null) ...[
             const SizedBox(height: 16),
-            Text('Store', style: Theme.of(context).textTheme.titleMedium),
+            Text('Estabelecimento', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
             Card(
               child: Padding(
@@ -157,7 +233,7 @@ class _ReceiptDetailScreenState extends State<ReceiptDetailScreen> {
           if (receipt.items != null && receipt.items!.isNotEmpty) ...[
             const SizedBox(height: 16),
             Text(
-              'Items (${receipt.items!.length})',
+              'Itens (${receipt.items!.length})',
               style: Theme.of(context).textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
@@ -178,7 +254,7 @@ class _ReceiptDetailScreenState extends State<ReceiptDetailScreen> {
           // Fiscal key
           if (receipt.fiscalKey.isNotEmpty) ...[
             const SizedBox(height: 16),
-            Text('Fiscal Key', style: Theme.of(context).textTheme.titleMedium),
+            Text('Chave de Acesso', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
             Card(
               child: Padding(
@@ -227,6 +303,19 @@ class _ItemTile extends StatelessWidget {
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                 ),
+                if (item.barcode != null && item.barcode!.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    'EAN: ${item.barcode}',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurfaceVariant
+                              .withAlpha(160),
+                          fontFamily: 'monospace',
+                        ),
+                  ),
+                ],
               ],
             ),
           ),

@@ -30,6 +30,7 @@ class Item {
   final String unit;
   final double unitPrice;
   final double totalPrice;
+  final String? barcode;
 
   const Item({
     required this.id,
@@ -38,6 +39,7 @@ class Item {
     required this.unit,
     required this.unitPrice,
     required this.totalPrice,
+    this.barcode,
   });
 
   factory Item.fromJson(Map<String, dynamic> json) {
@@ -48,6 +50,7 @@ class Item {
       unit: json['unit'] as String? ?? 'UN',
       unitPrice: (json['unit_price'] as num).toDouble(),
       totalPrice: (json['total_price'] as num).toDouble(),
+      barcode: json['barcode'] as String?,
     );
   }
 }

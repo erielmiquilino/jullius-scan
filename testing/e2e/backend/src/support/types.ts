@@ -1,4 +1,4 @@
-export type JobStatus = "queued" | "processing" | "completed" | "failed";
+export type JobStatus = "queued" | "processing" | "completed" | "failed" | "awaiting_captcha";
 
 export interface SubmitReceiptResponse {
   job_id: number;
@@ -20,6 +20,23 @@ export interface JobResponse {
   created_at: string;
   started_at?: string;
   completed_at?: string;
+  captcha_pending_at?: string;
+}
+
+export interface CaptchaContextResponse {
+  sefaz_url: string;
+  user_agent: string;
+}
+
+export interface SessionCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires?: number;
+  http_only: boolean;
+  secure: boolean;
+  same_site?: string;
 }
 
 export interface StoreResponse {
@@ -36,6 +53,7 @@ export interface ItemResponse {
   unit: string;
   unit_price: number;
   total_price: number;
+  barcode?: string;
 }
 
 export interface ReceiptResponse {
@@ -60,6 +78,7 @@ export interface DatabaseJobRow {
   failure_reason: string | null;
   error_detail: string | null;
   receipt_id: number | null;
+  captcha_phase: string | null;
 }
 
 export interface DatabaseReceiptRow {
@@ -86,4 +105,5 @@ export interface DatabaseItemRow {
   unit: string;
   unit_price: number;
   total_price: number;
+  barcode: string | null;
 }
