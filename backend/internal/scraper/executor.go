@@ -18,11 +18,16 @@ import (
 // remain valid when replayed by the worker.
 const UserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
+const detailPostbackTarget = "ctl00$Body$conFooter$btnVerDetalhe"
+
 // ExecutorResult holds the raw HTML extracted from a SEFAZ page.
 type ExecutorResult struct {
 	HTML      string
 	PageTitle string
 	FinalURL  string
+	// SessionCookies are captured from the live browser when a captcha page is
+	// detected, so the worker can persist and resume the exact paused session.
+	SessionCookies json.RawMessage
 }
 
 // BrowserCookie mirrors the JSON shape exchanged with the mobile app.
@@ -84,10 +89,6 @@ func (e *Executor) fetchPage(ctx context.Context, fiscalURL string, cookies []Br
 	)
 	defer browserCancel()
 
-	var bodyHTML string
-	var pageTitle string
-	var finalURL string
-
 	slog.Info("executor: navigating to fiscal URL", "url", fiscalURL, "resume", len(cookies) > 0)
 
 	var tasks []chromedp.Action
@@ -115,31 +116,42 @@ func (e *Executor) fetchPage(ctx context.Context, fiscalURL string, cookies []Br
 		chromedp.Navigate(fiscalURL),
 		chromedp.WaitVisible("body", chromedp.ByQuery),
 		chromedp.Sleep(2*time.Second),
-		chromedp.Title(&pageTitle),
-		chromedp.Location(&finalURL),
-		chromedp.OuterHTML("body", &bodyHTML, chromedp.ByQuery),
 	)
 
 	if err := chromedp.Run(browserCtx, tasks...); err != nil {
 		return nil, fmt.Errorf("chromedp execution failed: %w", err)
 	}
 
-	if strings.TrimSpace(bodyHTML) == "" {
-		return nil, fmt.Errorf("extracted HTML body is empty")
+	result, err := readCurrentPage(browserCtx)
+	if err != nil {
+		return nil, err
 	}
 
 	slog.Info("executor: page fetched successfully",
 		"url", fiscalURL,
-		"final_url", finalURL,
-		"title", pageTitle,
-		"html_length", len(bodyHTML),
+		"final_url", result.FinalURL,
+		"title", result.PageTitle,
+		"html_length", len(result.HTML),
 	)
 
-	return &ExecutorResult{
-		HTML:      bodyHTML,
-		PageTitle: pageTitle,
-		FinalURL:  finalURL,
-	}, nil
+	return result, nil
+}
+
+func captureSessionState(ctx context.Context, result *ExecutorResult) {
+	if result == nil {
+		return
+	}
+
+	currentURL, cookiesJSON, err := ExtractCurrentState(ctx)
+	if err != nil {
+		slog.Warn("executor: failed to capture live session state", "error", err)
+		result.SessionCookies = json.RawMessage(`[]`)
+		return
+	}
+	if currentURL != "" {
+		result.FinalURL = currentURL
+	}
+	result.SessionCookies = cookiesJSON
 }
 
 // ExtractCurrentState captures the browser's current URL and all cookies.
@@ -177,6 +189,91 @@ func ExtractCurrentState(ctx context.Context) (currentURL string, cookiesJSON js
 		return "", nil, fmt.Errorf("marshal cookies: %w", err)
 	}
 	return currentURL, data, nil
+}
+
+func readCurrentPage(ctx context.Context) (*ExecutorResult, error) {
+	var bodyHTML string
+	var pageTitle string
+	var finalURL string
+
+	err := chromedp.Run(ctx,
+		chromedp.Title(&pageTitle),
+		chromedp.Location(&finalURL),
+		chromedp.OuterHTML("body", &bodyHTML, chromedp.ByQuery),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read current page: %w", err)
+	}
+	if strings.TrimSpace(bodyHTML) == "" {
+		return nil, fmt.Errorf("read current page: extracted HTML body is empty")
+	}
+
+	result := &ExecutorResult{
+		HTML:      bodyHTML,
+		PageTitle: pageTitle,
+		FinalURL:  finalURL,
+	}
+	if detectCaptchaIndicator(result) != "" {
+		captureSessionState(ctx, result)
+	}
+	return result, nil
+}
+
+func transitionToDetailByPostback(ctx context.Context, summaryResult *ExecutorResult) (*ExecutorResult, error) {
+	var triggered bool
+	err := chromedp.Run(ctx,
+		chromedp.Evaluate(`(() => {
+			if (typeof window.__doPostBack === "function") {
+				window.__doPostBack("`+detailPostbackTarget+`", "")
+				return true
+			}
+			const button = document.getElementById("Body_conFooter_btnVerDetalhe")
+			if (button && typeof button.click === "function") {
+				button.click()
+				return true
+			}
+			return false
+		})()`, &triggered),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("detail postback: %w", err)
+	}
+	if !triggered {
+		return nil, fmt.Errorf("detail postback trigger not available in summary page")
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		current, err := readCurrentPage(ctx)
+		if err == nil {
+			if detectCaptchaIndicator(current) != "" || current.FinalURL != summaryResult.FinalURL {
+				return current, nil
+			}
+			if current.HTML != summaryResult.HTML {
+				if _, parseErr := ParseDetailPage(current.HTML); parseErr == nil {
+					return current, nil
+				}
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	current, err := readCurrentPage(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("detail postback capture after timeout: %w", err)
+	}
+	if current.FinalURL != summaryResult.FinalURL || detectCaptchaIndicator(current) != "" {
+		return current, nil
+	}
+	if current.HTML != summaryResult.HTML {
+		if _, parseErr := ParseDetailPage(current.HTML); parseErr == nil {
+			return current, nil
+		}
+	}
+	if current.FinalURL == summaryResult.FinalURL && current.HTML == summaryResult.HTML {
+		return nil, fmt.Errorf("detail postback did not change page state")
+	}
+	return nil, fmt.Errorf("detail postback changed page state but did not reach a detail or captcha page")
 }
 
 // TwoPhaseResult is returned by FetchSummaryAndDetail.
@@ -234,8 +331,6 @@ func (e *Executor) FetchWithDetailPhase(ctx context.Context, summaryURL string, 
 
 	// -- Phase 1: summary page --
 
-	var summaryHTML, summaryTitle, summaryFinalURL string
-
 	var summaryTasks []chromedp.Action
 	for _, c := range cookies {
 		cookie := c
@@ -256,39 +351,63 @@ func (e *Executor) FetchWithDetailPhase(ctx context.Context, summaryURL string, 
 		chromedp.Navigate(summaryURL),
 		chromedp.WaitVisible("body", chromedp.ByQuery),
 		chromedp.Sleep(2*time.Second),
-		chromedp.Title(&summaryTitle),
-		chromedp.Location(&summaryFinalURL),
-		chromedp.OuterHTML("body", &summaryHTML, chromedp.ByQuery),
 	)
 
 	slog.Info("executor: navigating to summary (two-phase)", "url", summaryURL)
 	if err := chromedp.Run(browserCtx, summaryTasks...); err != nil {
 		return nil, fmt.Errorf("summary navigation failed: %w", err)
 	}
-	if strings.TrimSpace(summaryHTML) == "" {
-		return nil, fmt.Errorf("summary page returned empty body")
+	summaryResult, err := readCurrentPage(browserCtx)
+	if err != nil {
+		return nil, fmt.Errorf("capture summary page: %w", err)
+	}
+	if detectCaptchaIndicator(summaryResult) != "" {
+		return &TwoPhaseResult{Summary: summaryResult}, nil
 	}
 
-	summaryResult := &ExecutorResult{HTML: summaryHTML, PageTitle: summaryTitle, FinalURL: summaryFinalURL}
+	// -- Phase 2: extract detail link from summary, then navigate or trigger postback --
 
-	// -- Phase 2: extract detail link from summary, then navigate --
-
-	detailURL, err := ExtractDetailLink(summaryHTML, summaryFinalURL)
+	detailURL, err := ExtractDetailLink(summaryResult.HTML, summaryResult.FinalURL)
 	if err != nil {
-		slog.Info("executor: detail link not found in summary, skipping detail phase", "summary_url", summaryURL, "reason", err)
-		return &TwoPhaseResult{Summary: summaryResult}, nil
+		slog.Info("executor: detail link not found in summary, trying detail postback", "summary_url", summaryURL, "reason", err)
+		detailResult, postbackErr := transitionToDetailByPostback(browserCtx, summaryResult)
+		if postbackErr != nil {
+			slog.Info("executor: detail postback unavailable, skipping detail phase", "summary_url", summaryURL, "reason", postbackErr)
+			return &TwoPhaseResult{Summary: summaryResult}, nil
+		}
+
+		if detectCaptchaIndicator(detailResult) != "" {
+			slog.Warn("executor: captcha detected on detail page",
+				"detail_url", detailResult.FinalURL,
+				"title", detailResult.PageTitle,
+			)
+			return &TwoPhaseResult{
+				Summary:       summaryResult,
+				DetailURL:     detailResult.FinalURL,
+				DetailCaptcha: true,
+				DetailCookies: detailResult.SessionCookies,
+			}, nil
+		}
+
+		slog.Info("executor: detail page fetched successfully",
+			"url", detailResult.FinalURL,
+			"final_url", detailResult.FinalURL,
+			"html_length", len(detailResult.HTML),
+			"mode", "postback",
+		)
+		return &TwoPhaseResult{
+			Summary:   summaryResult,
+			Detail:    detailResult,
+			DetailURL: detailResult.FinalURL,
+		}, nil
 	}
 
 	slog.Info("executor: navigating to detail page (two-phase)", "url", detailURL)
 
-	var detailHTML, detailTitle, detailFinalURL string
 	detailErr := chromedp.Run(browserCtx,
 		chromedp.Navigate(detailURL),
 		chromedp.WaitVisible("body", chromedp.ByQuery),
 		chromedp.Sleep(2*time.Second),
-		chromedp.Title(&detailTitle),
-		chromedp.Location(&detailFinalURL),
-		chromedp.OuterHTML("body", &detailHTML, chromedp.ByQuery),
 	)
 	if detailErr != nil {
 		// Navigation failure on detail page is non-fatal for the summary result.
@@ -296,49 +415,61 @@ func (e *Executor) FetchWithDetailPhase(ctx context.Context, summaryURL string, 
 		return &TwoPhaseResult{Summary: summaryResult}, nil
 	}
 
-	if strings.TrimSpace(detailHTML) == "" {
+	detailResult, err := readCurrentPage(browserCtx)
+	if err != nil {
+		slog.Warn("executor: failed to capture detail page after navigation", "url", detailURL, "error", err)
+		return &TwoPhaseResult{Summary: summaryResult}, nil
+	}
+
+	if strings.TrimSpace(detailResult.HTML) == "" {
 		slog.Warn("executor: detail page returned empty body", "url", detailURL)
 		return &TwoPhaseResult{Summary: summaryResult}, nil
 	}
 
-	detailResult := &ExecutorResult{HTML: detailHTML, PageTitle: detailTitle, FinalURL: detailFinalURL}
-
-	if DetectCaptcha(detailResult) {
-		// Captcha on detail page — extract live cookies before closing the browser.
-		_, cookiesJSON, cookieErr := ExtractCurrentState(browserCtx)
-		if cookieErr != nil {
-			slog.Warn("executor: failed to extract detail-phase cookies", "error", cookieErr)
-			cookiesJSON = json.RawMessage(`[]`)
-		}
+	if detectCaptchaIndicator(detailResult) != "" {
 		slog.Warn("executor: captcha detected on detail page",
-			"detail_url", detailURL,
-			"title", detailTitle,
+			"detail_url", detailResult.FinalURL,
+			"title", detailResult.PageTitle,
 		)
 		return &TwoPhaseResult{
 			Summary:       summaryResult,
-			DetailURL:     detailURL,
+			DetailURL:     detailResult.FinalURL,
 			DetailCaptcha: true,
-			DetailCookies: cookiesJSON,
+			DetailCookies: detailResult.SessionCookies,
 		}, nil
 	}
 
 	slog.Info("executor: detail page fetched successfully",
 		"url", detailURL,
-		"final_url", detailFinalURL,
-		"html_length", len(detailHTML),
+		"final_url", detailResult.FinalURL,
+		"html_length", len(detailResult.HTML),
+		"mode", "direct_link",
 	)
 	return &TwoPhaseResult{
 		Summary:   summaryResult,
 		Detail:    detailResult,
-		DetailURL: detailURL,
+		DetailURL: detailResult.FinalURL,
 	}, nil
 }
 
 // DetectCaptcha checks the extracted HTML and page title for common SEFAZ
 // captcha indicators. Returns true if a captcha or anti-bot block is detected.
 func DetectCaptcha(result *ExecutorResult) bool {
-	if result == nil {
+	indicator := detectCaptchaIndicator(result)
+	if indicator == "" {
 		return false
+	}
+
+	slog.Warn("captcha detected in page",
+		"indicator", indicator,
+		"title", result.PageTitle,
+	)
+	return true
+}
+
+func detectCaptchaIndicator(result *ExecutorResult) string {
+	if result == nil {
+		return ""
 	}
 
 	lowerHTML := strings.ToLower(result.HTML)
@@ -359,13 +490,9 @@ func DetectCaptcha(result *ExecutorResult) bool {
 
 	for _, indicator := range captchaIndicators {
 		if strings.Contains(lowerHTML, indicator) || strings.Contains(lowerTitle, indicator) {
-			slog.Warn("captcha detected in page",
-				"indicator", indicator,
-				"title", result.PageTitle,
-			)
-			return true
+			return indicator
 		}
 	}
 
-	return false
+	return ""
 }

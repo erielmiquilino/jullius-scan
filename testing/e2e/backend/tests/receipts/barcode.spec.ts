@@ -1,6 +1,7 @@
 import { test, expect } from "../fixtures";
 import { pollJobUntilTerminal } from "../../src/support/polling";
 import { fetchCaptchaContext, submitCaptchaResume, solvedCookies } from "../../src/support/captcha";
+import type { ReceiptResponse } from "../../src/support/types";
 
 const SEFAZ_MOCK_BASE = "http://sefaz-mock:8091";
 const SUMMARY_URL = `${SEFAZ_MOCK_BASE}/nfce-consulta-detalhada.html`;
@@ -31,6 +32,16 @@ test("happy path: items contain barcode when detail page is available", async ({
   // Item 2 (ARROZ) and Item 3 (CAFE) have EAN codes
   expect(items[1]!.barcode).toBe("7896068400100");
   expect(items[2]!.barcode).toBe("7896005800058");
+
+  const receiptResponse = await api.get(`/api/v1/receipts/${dbJob!.receipt_id!}`, {
+    headers: { Authorization: `Bearer ${bearerToken}` },
+  });
+  expect(receiptResponse.status()).toBe(200);
+  const receipt = (await receiptResponse.json()) as ReceiptResponse;
+  expect(receipt.items).toHaveLength(3);
+  expect(receipt.items?.[0]?.barcode).toBeUndefined();
+  expect(receipt.items?.[1]?.barcode).toBe("7896068400100");
+  expect(receipt.items?.[2]?.barcode).toBe("7896005800058");
 });
 
 test("detail-phase captcha: job pauses with captcha_phase=detail, resumes and completes with barcode", async ({ api, bearerToken, state }) => {
@@ -52,9 +63,10 @@ test("detail-phase captcha: job pauses with captcha_phase=detail, resumes and co
   const dbJobPaused = await state.postgres.getJob(payload.job_id);
   expect(dbJobPaused!.captcha_phase).toBe("detail");
 
-  // Fetch captcha context — should return the detail captcha challenge URL
+  // Fetch captcha context — should return the detail URL that triggered the captcha page
   const ctx = await fetchCaptchaContext(api, payload.job_id, bearerToken);
-  expect(ctx.sefaz_url).toContain("detail-challenge");
+  expect(ctx.sefaz_url).toContain("Nfe_DetalheCert.aspx");
+  expect(ctx.sefaz_url).toContain("DETAIL_GATE_TOKEN");
 
   // Submit solved cookies — the mock accepts e2e_captcha_solved=1
   const sefazHost = new URL(DETAIL_CAPTCHA_SUMMARY_URL).hostname;
@@ -73,4 +85,12 @@ test("detail-phase captcha: job pauses with captcha_phase=detail, resumes and co
   expect(items.length).toBe(3);
   expect(items[1]!.barcode).toBe("7896068400100");
   expect(items[2]!.barcode).toBe("7896005800058");
+
+  const receiptResponse = await api.get(`/api/v1/receipts/${dbJob!.receipt_id!}`, {
+    headers: { Authorization: `Bearer ${bearerToken}` },
+  });
+  expect(receiptResponse.status()).toBe(200);
+  const receipt = (await receiptResponse.json()) as ReceiptResponse;
+  expect(receipt.items?.[1]?.barcode).toBe("7896068400100");
+  expect(receipt.items?.[2]?.barcode).toBe("7896005800058");
 });

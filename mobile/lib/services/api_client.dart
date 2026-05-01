@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:jullius_scan/config/api_config.dart';
 import 'package:jullius_scan/models/api_error.dart';
 import 'package:jullius_scan/models/captcha_context.dart';
+import 'package:jullius_scan/models/item_search_result.dart';
 import 'package:jullius_scan/models/job.dart';
 import 'package:jullius_scan/models/receipt.dart';
 import 'package:jullius_scan/models/session_cookie.dart';
@@ -99,6 +100,31 @@ class ApiClient {
   /// DELETE /api/v1/receipts/{id}
   Future<void> deleteReceipt(int id) async {
     await _delete('/api/v1/receipts/$id');
+  }
+
+  // -- Item search --
+
+  /// Search items already purchased by the current user's house, grouped by
+  /// barcode (when present) or exact description, with last-purchase summary.
+  ///
+  /// [query] must be at least 3 characters after trimming. [periodDays] is the
+  /// temporal filter — null means "all time". When omitted, the backend
+  /// applies the default 30-day window.
+  ///
+  /// GET /api/v1/items/search
+  Future<ItemSearchPage> searchItems(String query, {int? periodDays}) async {
+    final params = <String, String>{'q': query};
+    if (periodDays == null) {
+      params['period_days'] = 'null';
+    } else {
+      params['period_days'] = periodDays.toString();
+    }
+    final qs = params.entries
+        .map((e) =>
+            '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}')
+        .join('&');
+    final json = await _get('/api/v1/items/search?$qs');
+    return ItemSearchPage.fromJson(json as Map<String, dynamic>);
   }
 
   // -- Jobs --

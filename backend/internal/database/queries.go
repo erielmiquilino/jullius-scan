@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -481,4 +482,148 @@ func (q *ReceiptQueries) CreateItems(ctx context.Context, items []domain.Item) e
 		}
 	}
 	return nil
+}
+
+// ItemQueries provides item-search operations spanning items, receipts, and stores.
+type ItemQueries struct {
+	db *DB
+}
+
+// NewItemQueries creates a new ItemQueries instance.
+func NewItemQueries(db *DB) *ItemQueries {
+	return &ItemQueries{db: db}
+}
+
+// ItemSearchAggregate is one grouped row in the item search result.
+// A "group" is identified by barcode when present, otherwise by exact description.
+type ItemSearchAggregate struct {
+	Description       string
+	Barcode           *string
+	LastPurchasedAt   time.Time
+	LastUnitPrice     float64
+	LastTotalPrice    float64
+	PreviousUnitPrice *float64
+	AverageUnitPrice  float64
+	PurchaseCount     int
+	StoreID           int64
+	StoreName         string
+	StoreCNPJ         string
+	ReceiptID         int64
+}
+
+// ItemSearchLimit is the maximum number of grouped items returned by SearchItemsByHouse.
+const ItemSearchLimit = 50
+
+// barcodeQueryPattern matches inputs that are 8 or more contiguous digits.
+var barcodeQueryPattern = regexp.MustCompile(`^\d{8,}$`)
+
+// IsBarcodeQuery reports whether a query string should be treated as an exact
+// barcode lookup (8+ contiguous digits) instead of a description search.
+func IsBarcodeQuery(query string) bool {
+	return barcodeQueryPattern.MatchString(query)
+}
+
+// SearchItemsByHouse runs the aggregated item search for a given house.
+//   - query: already trimmed; routed to barcode-exact when matching ^\d{8,}$,
+//     otherwise to a substring ILIKE on description with diacritic-insensitive
+//     normalization (immutable_unaccent + lower).
+//   - periodDays: nil → no temporal filter; ≥0 → issued_at within last N days.
+//
+// Returns the aggregated list (≤ItemSearchLimit), a truncated flag (true when a
+// 51st group existed and was discarded), and "barcode" or "description" so the
+// caller can echo which strategy was used.
+func (q *ItemQueries) SearchItemsByHouse(ctx context.Context, houseID int64, query string, periodDays *int) ([]ItemSearchAggregate, bool, string, error) {
+	matchedBy := "description"
+	var pattern string
+	matchExpr := "immutable_unaccent(lower(items.description)) ILIKE immutable_unaccent(lower($2))"
+	if IsBarcodeQuery(query) {
+		matchedBy = "barcode"
+		matchExpr = "items.barcode = $2"
+		pattern = query
+	} else {
+		pattern = "%" + query + "%"
+	}
+
+	sql := `
+WITH eligible AS (
+    SELECT items.id, items.barcode, items.description, items.unit_price,
+           items.quantity, items.total_price,
+           r.id AS receipt_id, r.issued_at,
+           s.id AS store_id, s.name AS store_name, s.cnpj AS store_cnpj
+    FROM items
+    JOIN receipts r ON r.id = items.receipt_id
+    JOIN stores s   ON s.id = r.store_id
+    WHERE r.house_id = $1
+      AND ` + matchExpr + `
+      AND ($3::int IS NULL OR r.issued_at >= NOW() - make_interval(days => $3::int))
+),
+ranked AS (
+    SELECT eligible.*,
+           COALESCE(NULLIF(barcode, ''), 'desc:' || description) AS group_key,
+           ROW_NUMBER() OVER (
+               PARTITION BY COALESCE(NULLIF(barcode, ''), 'desc:' || description)
+               ORDER BY issued_at DESC, id DESC
+           ) AS rn
+    FROM eligible
+),
+aggregates AS (
+    SELECT group_key,
+           COUNT(*)::int AS purchase_count,
+           (SUM(total_price) / NULLIF(SUM(quantity), 0))::float8 AS average_unit_price
+    FROM ranked
+    GROUP BY group_key
+),
+last_purchase AS (
+    SELECT group_key, description, barcode,
+           unit_price::float8  AS last_unit_price,
+           total_price::float8 AS last_total_price,
+           issued_at AS last_purchased_at,
+           receipt_id, store_id, store_name, store_cnpj
+    FROM ranked
+    WHERE rn = 1
+),
+prev_purchase AS (
+    SELECT group_key, unit_price::float8 AS previous_unit_price
+    FROM ranked
+    WHERE rn = 2
+)
+SELECT lp.description, lp.barcode, lp.last_purchased_at,
+       lp.last_unit_price, lp.last_total_price,
+       pp.previous_unit_price, ag.average_unit_price, ag.purchase_count,
+       lp.store_id, lp.store_name, lp.store_cnpj, lp.receipt_id
+FROM last_purchase lp
+JOIN aggregates ag USING (group_key)
+LEFT JOIN prev_purchase pp USING (group_key)
+ORDER BY lp.last_purchased_at DESC, lp.receipt_id DESC
+LIMIT 51
+`
+
+	rows, err := q.db.Pool.Query(ctx, sql, houseID, pattern, periodDays)
+	if err != nil {
+		return nil, false, matchedBy, fmt.Errorf("search items by house: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]ItemSearchAggregate, 0, ItemSearchLimit)
+	for rows.Next() {
+		var a ItemSearchAggregate
+		if err := rows.Scan(
+			&a.Description, &a.Barcode, &a.LastPurchasedAt,
+			&a.LastUnitPrice, &a.LastTotalPrice,
+			&a.PreviousUnitPrice, &a.AverageUnitPrice, &a.PurchaseCount,
+			&a.StoreID, &a.StoreName, &a.StoreCNPJ, &a.ReceiptID,
+		); err != nil {
+			return nil, false, matchedBy, fmt.Errorf("scan item search row: %w", err)
+		}
+		results = append(results, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, matchedBy, fmt.Errorf("iterate item search rows: %w", err)
+	}
+
+	truncated := len(results) > ItemSearchLimit
+	if truncated {
+		results = results[:ItemSearchLimit]
+	}
+	return results, truncated, matchedBy, nil
 }

@@ -30,8 +30,37 @@
   <div>QR-Code: https://sat.sef.sc.gov.br/nfce/consulta?p=42260375492694000201651080002792821016613942|3|1</div>
   <div>URL NFC-e: https://sat.sef.sc.gov.br/nfce/consulta</div>
 
+  <script>
+    function buildDetailPath(token) {
+      return [
+        '/tax.NET/Sat.NFe.Web/Consultas/',
+        'Nfe',
+        '_DetalheCert',
+        '.aspx?rq=',
+        token,
+      ].join('');
+    }
+
+    function __doPostBack(eventTarget, eventArgument) {
+      if (eventTarget === 'ctl00$Body$conFooter$btnVerDetalhe') {
+        const form = document.createElement('form');
+        form.method = 'GET';
+        form.action = buildDetailPath('');
+        const token = document.createElement('input');
+        token.type = 'hidden';
+        token.name = 'rq';
+        token.value = 'MOCK_TOKEN_001';
+        form.appendChild(token);
+        document.body.appendChild(form);
+        form.submit();
+      }
+    }
+  </script>
+
   <div style="margin-top:20px; text-align:center;">
-    <a href="/tax.NET/Sat.NFe.Web/Consultas/Nfe_DetalheCert.aspx?rq=MOCK_TOKEN_001">Ver NFC-e detalhada</a>
+    <a id="Body_conFooter_btnVerDetalhe" href="javascript:__doPostBack('ctl00$Body$conFooter$btnVerDetalhe','')">
+      <span class="sat-btn-text">Ver NFC-e detalhada</span>
+    </a>
   </div>
 </body>
 </html>

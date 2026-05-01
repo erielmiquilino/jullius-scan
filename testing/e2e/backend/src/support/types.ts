@@ -107,3 +107,32 @@ export interface DatabaseItemRow {
   total_price: number;
   barcode: string | null;
 }
+
+export interface ItemSearchStore {
+  id: number;
+  name: string;
+  cnpj: string;
+}
+
+export interface ItemSearchResult {
+  description: string;
+  barcode?: string;
+  last_purchased_at: string;
+  last_unit_price: number;
+  last_total_price: number;
+  previous_unit_price?: number;
+  average_unit_price: number;
+  purchase_count: number;
+  store: ItemSearchStore;
+  receipt_id: number;
+}
+
+export interface ItemSearchResponse {
+  items: ItemSearchResult[];
+  truncated: boolean;
+  query: {
+    q: string;
+    period_days: number | null;
+    matched_by: "barcode" | "description";
+  };
+}

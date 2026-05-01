@@ -433,6 +433,11 @@ var (
 	// Fallback: match any <a> whose visible text is "Ver NFC-e detalhada" regardless of href.
 	detailLinkTextRegex = regexp.MustCompile(`(?is)<a\b[^>]*href="([^"]+)"[^>]*>\s*Ver\s+NF[Cc]-e\s+detalhada\s*</a>`)
 
+	// Preferred parsing mode: extract one detail block per item, then read Comercial
+	// or Tributavel from within that block. This avoids positional drift when one of
+	// the two labels is missing for a subset of items.
+	detailItemBlockRegex = regexp.MustCompile(`(?is)<div[^>]*class="[^"]*item-detalhe[^"]*"[^>]*>(.*?)</div>`)
+
 	// EAN Comercial: label in one cell, value in the next cell.
 	// The value is either digits (EAN-8/13) or "SEM GTIN" (no barcode).
 	detailEANComercialRegex = regexp.MustCompile(`(?is)C[oó]digo\s+EAN\s+Comercial\s*(?:</[^>]+>\s*<[^>]+>|[:\s]+)\s*(SEM\s+GTIN|[\d]+)`)
@@ -493,23 +498,41 @@ func ParseDetailPage(detailHTML string) ([]string, error) {
 		return nil, fmt.Errorf("empty detail page HTML")
 	}
 
+	if blocks := detailItemBlockRegex.FindAllStringSubmatch(detailHTML, -1); len(blocks) > 0 {
+		barcodes := make([]string, 0, len(blocks))
+		for _, block := range blocks {
+			if len(block) < 2 {
+				continue
+			}
+			barcodes = append(barcodes, extractDetailBlockEAN(block[1]))
+		}
+		if len(barcodes) > 0 {
+			slog.Info("detail page parsed", "ean_count", len(barcodes), "mode", "blocks")
+			return barcodes, nil
+		}
+	}
+
 	// Split the HTML into per-item blocks delimited by each EAN Comercial occurrence.
 	// Strategy: find ALL EAN Comercial + EAN Tributável pairs in document order.
 	comercialMatches := detailEANComercialRegex.FindAllStringSubmatch(detailHTML, -1)
 	tributavelMatches := detailEANTributavelRegex.FindAllStringSubmatch(detailHTML, -1)
 
 	count := len(comercialMatches)
+	if len(tributavelMatches) > count {
+		count = len(tributavelMatches)
+	}
 	if count == 0 {
-		// If neither field is present at all, the page may not be fully rendered.
-		return nil, fmt.Errorf("no EAN Comercial fields found in detail page HTML")
+		return nil, fmt.Errorf("no EAN fields found in detail page HTML")
 	}
 
 	barcodes := make([]string, count)
-	for i, m := range comercialMatches {
-		if len(m) >= 2 {
-			raw := strings.TrimSpace(m[1])
-			if !strings.EqualFold(raw, "SEM GTIN") && raw != "" {
-				barcodes[i] = raw
+	for i := 0; i < count; i++ {
+		if i < len(comercialMatches) {
+			if m := comercialMatches[i]; len(m) >= 2 {
+				raw := strings.TrimSpace(m[1])
+				if !strings.EqualFold(raw, "SEM GTIN") && raw != "" {
+					barcodes[i] = raw
+				}
 			}
 		}
 		// Fallback to Tributável if Comercial was empty / SEM GTIN.
@@ -523,8 +546,24 @@ func ParseDetailPage(detailHTML string) ([]string, error) {
 		}
 	}
 
-	slog.Info("detail page parsed", "ean_count", count)
+	slog.Info("detail page parsed", "ean_count", count, "mode", "document")
 	return barcodes, nil
+}
+
+func extractDetailBlockEAN(blockHTML string) string {
+	if m := detailEANComercialRegex.FindStringSubmatch(blockHTML); len(m) >= 2 {
+		raw := strings.TrimSpace(m[1])
+		if !strings.EqualFold(raw, "SEM GTIN") && raw != "" {
+			return raw
+		}
+	}
+	if m := detailEANTributavelRegex.FindStringSubmatch(blockHTML); len(m) >= 2 {
+		raw := strings.TrimSpace(m[1])
+		if !strings.EqualFold(raw, "SEM GTIN") && raw != "" {
+			return raw
+		}
+	}
+	return ""
 }
 
 // MergeBarcodes assigns EAN codes from the detail page into the corresponding items

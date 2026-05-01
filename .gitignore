@@ -13,3 +13,17 @@ testing/e2e/backend/playwright-report/
 testing/e2e/backend/test-results/
 testing/e2e/backend/.auth/
 testing/e2e/backend/.env
+
+# Backend dev helpers
+backend/tools/.env
+
+# Local logs
+logs.txt
+
+# Flutter / Android build artifacts
+mobile/android/build/
+mobile/build/
+mobile/.dart_tool/
+
+# Local Claude Code user settings
+.claude/settings.local.json

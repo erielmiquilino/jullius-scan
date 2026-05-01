@@ -113,7 +113,7 @@ func (w *Worker) processJob(ctx context.Context, msg *queue.JobMessage) {
 	// Captcha on detail page transition.
 	if twoPhase.DetailCaptcha {
 		parsedJSON, _ := json.Marshal(parsed)
-		w.handleCaptchaPause(ctx, msg, &ExecutorResult{FinalURL: twoPhase.DetailURL}, domain.CaptchaPhaseDetail, parsedJSON)
+		w.handleCaptchaPause(ctx, msg, &ExecutorResult{FinalURL: twoPhase.DetailURL, SessionCookies: twoPhase.DetailCookies}, domain.CaptchaPhaseDetail, parsedJSON)
 		return
 	}
 
@@ -187,7 +187,7 @@ func (w *Worker) processResume(ctx context.Context, jobCtx context.Context, msg 
 
 	if twoPhase.DetailCaptcha {
 		parsedJSON, _ := json.Marshal(parsed)
-		w.handleCaptchaPause(ctx, msg, &ExecutorResult{FinalURL: twoPhase.DetailURL}, domain.CaptchaPhaseDetail, parsedJSON)
+		w.handleCaptchaPause(ctx, msg, &ExecutorResult{FinalURL: twoPhase.DetailURL, SessionCookies: twoPhase.DetailCookies}, domain.CaptchaPhaseDetail, parsedJSON)
 		return
 	}
 
@@ -281,6 +281,9 @@ func enrichWithBarcodes(items []domain.Item, detailHTML string) []domain.Item {
 // and optionally the already-parsed summary payload (for detail-phase pauses).
 func (w *Worker) handleCaptchaPause(ctx context.Context, msg *queue.JobMessage, result *ExecutorResult, phase domain.CaptchaPhase, parsedSummary json.RawMessage) {
 	cookiesJSON := json.RawMessage(`[]`)
+	if result != nil && len(result.SessionCookies) > 0 {
+		cookiesJSON = result.SessionCookies
+	}
 	currentURL := result.FinalURL
 	if currentURL == "" {
 		currentURL = msg.FiscalURL

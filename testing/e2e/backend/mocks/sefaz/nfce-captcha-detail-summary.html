@@ -28,9 +28,38 @@
     </tr>
   </table>
 
-  <!-- Detail link is gated by a challenge page on first visit -->
+  <script>
+    function buildDetailPath(token) {
+      return [
+        '/tax.NET/Sat.NFe.Web/Consultas/',
+        'Nfe',
+        '_DetalheCert',
+        '.aspx?rq=',
+        token,
+      ].join('');
+    }
+
+    function __doPostBack(eventTarget, eventArgument) {
+      if (eventTarget === 'ctl00$Body$conFooter$btnVerDetalhe') {
+        const form = document.createElement('form');
+        form.method = 'GET';
+        form.action = buildDetailPath('');
+        const token = document.createElement('input');
+        token.type = 'hidden';
+        token.name = 'rq';
+        token.value = 'DETAIL_GATE_TOKEN';
+        form.appendChild(token);
+        document.body.appendChild(form);
+        form.submit();
+      }
+    }
+  </script>
+
+  <!-- Detail page is gated by a challenge route on first visit -->
   <div style="margin-top:20px; text-align:center;">
-    <a href="/nfce/detail-challenge">Ver NFC-e detalhada</a>
+    <a id="Body_conFooter_btnVerDetalhe" href="javascript:__doPostBack('ctl00$Body$conFooter$btnVerDetalhe','')">
+      <span class="sat-btn-text">Ver NFC-e detalhada</span>
+    </a>
   </div>
 </body>
 </html>

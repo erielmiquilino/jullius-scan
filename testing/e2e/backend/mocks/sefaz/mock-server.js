@@ -90,6 +90,25 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (url === "/tax.NET/Sat.NFe.Web/Consultas/Nfe_DetalheCert.aspx" && requestUrl.searchParams.get("rq") === "DETAIL_GATE_TOKEN") {
+    const cookies = parseCookies(req.headers["cookie"]);
+    if (cookies["e2e_captcha_solved"] === "1") {
+      const filePath = path.join(baseDir, "nfce-detalhe-cert.html");
+      const html = await fs.readFile(filePath, "utf8");
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(html);
+    } else {
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Set-Cookie": "e2e_session=pending; Path=/; HttpOnly",
+      });
+      const filePath = path.join(baseDir, "captcha-challenge.html");
+      const html = await fs.readFile(filePath, "utf8");
+      res.end(html);
+    }
+    return;
+  }
+
   const fileName = routes[url];
   if (!fileName) {
     res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });

@@ -7,11 +7,21 @@ import 'package:jullius_scan/models/session_cookie.dart';
 import 'package:jullius_scan/services/api_client.dart';
 
 // JS snippet that returns true when the NFC-e receipt content is visible.
+//
+// SEFAZ pages vary by state and by template (resumed vs detailed view), so we
+// match multiple signals. Returning true here triggers cookie extraction and
+// resume submission to the backend.
 const _nfceContentCheck = '''
-  (document.getElementById('tabResult') !== null ||
-   document.querySelector('.NFe') !== null ||
-   document.title.toLowerCase().includes('nfc-e') ||
-   document.title.toLowerCase().includes('nota fiscal'))
+(function() {
+  if (document.getElementById('tabResult')) return true;
+  if (document.querySelector('.NFe')) return true;
+  if (document.querySelector('.txtTopo')) return true;
+  var title = (document.title || '').toLowerCase();
+  if (/nfc?-?e|nota fiscal|consulta da nfc/.test(title)) return true;
+  var body = document.body ? (document.body.innerText || '') : '';
+  if (/chave de acesso/i.test(body)) return true;
+  return false;
+})()
 ''';
 
 class CaptchaWebViewScreen extends StatefulWidget {
@@ -80,27 +90,35 @@ class _CaptchaWebViewScreenState extends State<CaptchaWebViewScreen> {
     if (_captchaResolved || _isSubmitting) return;
 
     // Check if the page now shows NFC-e receipt content.
-    final result = await _webController.runJavaScriptReturningResult(_nfceContentCheck);
+    final result = await _webController.runJavaScriptReturningResult(
+      _nfceContentCheck,
+    );
     final resolved = result.toString() == 'true';
 
     if (resolved) {
-      await _extractAndSubmitCookies(sefazUrl);
+      await _extractAndSubmitCookies(url, sefazUrl);
     }
   }
 
-  Future<void> _extractAndSubmitCookies(String sefazUrl) async {
+  Future<void> _extractAndSubmitCookies(
+    String currentUrl,
+    String sefazUrl,
+  ) async {
     if (_isSubmitting) return;
     setState(() => _isSubmitting = true);
 
     try {
       final host = Uri.parse(sefazUrl).host;
-      final rawCookies = await _cookieManager.getCookies(host);
+      final cookiesUrl = currentUrl.isNotEmpty ? currentUrl : sefazUrl;
+      final rawCookies = await _cookieManager.getCookies(cookiesUrl);
       final cookies = rawCookies
           .map(
             (c) => SessionCookie(
               name: c.name,
               value: c.value,
-              domain: (c.domain == null || c.domain!.isEmpty) ? host : c.domain!,
+              domain: (c.domain == null || c.domain!.isEmpty)
+                  ? host
+                  : c.domain!,
               path: (c.path == null || c.path!.isEmpty) ? '/' : c.path!,
               expires: c.expires != null
                   ? c.expires!.millisecondsSinceEpoch / 1000.0
@@ -116,7 +134,9 @@ class _CaptchaWebViewScreenState extends State<CaptchaWebViewScreen> {
       // Cloudflare session with the same UA that the cookie was issued for.
       String? webViewUA;
       try {
-        final uaResult = await _webController.runJavaScriptReturningResult('navigator.userAgent');
+        final uaResult = await _webController.runJavaScriptReturningResult(
+          'navigator.userAgent',
+        );
         final raw = uaResult.toString();
         // runJavaScriptReturningResult wraps strings in quotes on some platforms.
         webViewUA = raw.startsWith('"') && raw.endsWith('"')
@@ -127,7 +147,11 @@ class _CaptchaWebViewScreenState extends State<CaptchaWebViewScreen> {
         // whatever was previously stored, which is better than failing entirely.
       }
 
-      await widget.apiClient.submitCaptchaResume(widget.jobId, cookies, userAgent: webViewUA);
+      await widget.apiClient.submitCaptchaResume(
+        widget.jobId,
+        cookies,
+        userAgent: webViewUA,
+      );
 
       setState(() => _captchaResolved = true);
       if (mounted) {
@@ -146,7 +170,9 @@ class _CaptchaWebViewScreenState extends State<CaptchaWebViewScreen> {
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         title: const Text('Erro ao enviar captcha'),
-        content: Text('Não foi possível confirmar a resolução do captcha.\n\n$error'),
+        content: Text(
+          'Não foi possível confirmar a resolução do captcha.\n\n$error',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -155,7 +181,7 @@ class _CaptchaWebViewScreenState extends State<CaptchaWebViewScreen> {
           ElevatedButton(
             onPressed: () {
               Navigator.of(ctx).pop(true);
-              _extractAndSubmitCookies(sefazUrl);
+              _extractAndSubmitCookies(sefazUrl, sefazUrl);
             },
             child: const Text('Tentar novamente'),
           ),
