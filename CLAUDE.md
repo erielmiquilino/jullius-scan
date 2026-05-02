@@ -24,6 +24,11 @@ docker compose -f backend/tools/docker-compose.yml up -d
 cd backend && go run ./cmd/api
 cd backend && go run ./cmd/worker
 
+# Backend — provision a House member (Firebase Auth + DB) atomically
+# Requires DATABASE_URL, FIREBASE_PROJECT_ID, GOOGLE_APPLICATION_CREDENTIALS.
+cd backend && echo 's3cr3t' | go run ./cmd/provision-user \
+    --email alice@example.com --password-stdin --house-name "Casa Principal" --yes
+
 # Backend — static checks (run before committing)
 cd backend && go vet ./...
 cd backend && gofmt -l .      # output must be empty; fix with: gofmt -w .

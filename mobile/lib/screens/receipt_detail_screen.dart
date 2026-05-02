@@ -169,34 +169,67 @@ class _ReceiptDetailScreenState extends State<ReceiptDetailScreen> {
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(Icons.attach_money,
-                      color: Theme.of(context).colorScheme.primary),
-                  const SizedBox(width: 12),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                  Row(
                     children: [
-                      Text('Total',
-                          style: Theme.of(context).textTheme.labelMedium),
-                      Text(
-                        currencyFormat.format(receipt.totalAmount),
-                        style:
-                            Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      Icon(Icons.attach_money,
+                          color: Theme.of(context).colorScheme.primary),
+                      const SizedBox(width: 12),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Total',
+                              style: Theme.of(context).textTheme.labelMedium),
+                          Text(
+                            currencyFormat.format(receipt.totalAmount),
+                            style: Theme.of(context)
+                                .textTheme
+                                .headlineSmall
+                                ?.copyWith(
                                   fontWeight: FontWeight.bold,
                                 ),
+                          ),
+                        ],
+                      ),
+                      const Spacer(),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text('Emitido em',
+                              style: Theme.of(context).textTheme.labelMedium),
+                          Text(dateFormat.format(receipt.issuedAt.toLocal())),
+                        ],
                       ),
                     ],
                   ),
-                  const Spacer(),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text('Emitido em',
-                          style: Theme.of(context).textTheme.labelMedium),
-                      Text(dateFormat.format(receipt.issuedAt.toLocal())),
-                    ],
-                  ),
+                  if (receipt.submittedBy != null) ...[
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.person_outline,
+                          size: 16,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'Lançado por ${receipt.submittedBy!.name}',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),

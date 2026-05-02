@@ -73,6 +73,7 @@ type Receipt struct {
 	IssuedAt    time.Time `json:"issued_at"`
 	TotalAmount float64   `json:"total_amount"`
 	CreatedAt   time.Time `json:"created_at"`
+	CreatedBy   *int64    `json:"created_by,omitempty"`
 }
 
 // CaptchaPhase identifies where in the scraping pipeline a job was paused for captcha.

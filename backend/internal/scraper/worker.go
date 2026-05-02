@@ -122,7 +122,16 @@ func (w *Worker) processJob(ctx context.Context, msg *queue.JobMessage) {
 		parsed.Items = enrichWithBarcodes(parsed.Items, twoPhase.Detail.HTML)
 	}
 
-	if err := w.persistReceipt(ctx, msg, parsed); err != nil {
+	job, err := w.jobs.GetByID(ctx, msg.JobID)
+	if err != nil {
+		reason := domain.FailureUnknown
+		_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,
+			fmt.Sprintf("failed to load job before persist: %v", err), nil)
+		slog.Error("job failed: cannot load job for persistence", "job_id", msg.JobID, "error", err)
+		return
+	}
+
+	if err := w.persistReceipt(ctx, msg, parsed, job.SubmittedBy); err != nil {
 		reason := domain.FailureUnknown
 		_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,
 			fmt.Sprintf("failed to persist receipt: %v", err), nil)
@@ -195,7 +204,7 @@ func (w *Worker) processResume(ctx context.Context, jobCtx context.Context, msg 
 		parsed.Items = enrichWithBarcodes(parsed.Items, twoPhase.Detail.HTML)
 	}
 
-	if err := w.persistReceipt(ctx, msg, parsed); err != nil {
+	if err := w.persistReceipt(ctx, msg, parsed, job.SubmittedBy); err != nil {
 		reason := domain.FailureUnknown
 		_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,
 			fmt.Sprintf("failed to persist receipt: %v", err), nil)
@@ -247,7 +256,7 @@ func (w *Worker) resumeDetailPhase(ctx context.Context, jobCtx context.Context, 
 
 	parsed.Items = enrichWithBarcodes(parsed.Items, detailResult.HTML)
 
-	if err := w.persistReceipt(ctx, msg, &parsed); err != nil {
+	if err := w.persistReceipt(ctx, msg, &parsed, job.SubmittedBy); err != nil {
 		reason := domain.FailureUnknown
 		_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,
 			fmt.Sprintf("failed to persist receipt: %v", err), nil)
@@ -304,13 +313,16 @@ func (w *Worker) handleCaptchaPause(ctx context.Context, msg *queue.JobMessage, 
 }
 
 // persistReceipt saves the parsed receipt data (store, receipt, items) to PostgreSQL
-// and marks the job as completed.
-func (w *Worker) persistReceipt(ctx context.Context, msg *queue.JobMessage, parsed *ParsedReceipt) error {
+// and marks the job as completed. submittedBy is the users.id of the House member
+// whose authenticated request originated the scraping job; it is stored on the
+// receipt so the API can later attribute the receipt to its submitter.
+func (w *Worker) persistReceipt(ctx context.Context, msg *queue.JobMessage, parsed *ParsedReceipt, submittedBy int64) error {
 	store := &parsed.Store
 	if err := w.receipts.UpsertStore(ctx, store); err != nil {
 		return fmt.Errorf("upsert store: %w", err)
 	}
 
+	createdBy := submittedBy
 	receipt := &domain.Receipt{
 		HouseID:     msg.HouseID,
 		StoreID:     store.ID,
@@ -318,6 +330,7 @@ func (w *Worker) persistReceipt(ctx context.Context, msg *queue.JobMessage, pars
 		FiscalURL:   msg.FiscalURL,
 		IssuedAt:    parsed.Receipt.IssuedAt,
 		TotalAmount: parsed.Receipt.TotalAmount,
+		CreatedBy:   &createdBy,
 	}
 	if err := w.receipts.CreateReceipt(ctx, receipt); err != nil {
 		return fmt.Errorf("create receipt: %w", err)

@@ -1,10 +1,13 @@
 -- seed_mvp.sql
--- Manual MVP provisioning: run this after migrations to set up the initial
--- House, users, and memberships for personal use.
+-- Bootstrap-only: this seed creates the initial House and the very first
+-- owner. For every additional member added afterwards, prefer the
+-- `cmd/provision-user` CLI (see backend/cmd/provision-user/README.md), which
+-- creates the Firebase user and the corresponding database rows in a single
+-- atomic, idempotent step.
 --
--- INSTRUCTIONS:
--- 1. Create users in Firebase Auth first (via Firebase Console)
--- 2. Copy the Firebase UID for each user
+-- INSTRUCTIONS (bootstrap):
+-- 1. Create the initial owner in Firebase Auth (via Firebase Console)
+-- 2. Copy the Firebase UID
 -- 3. Replace the placeholder values below with real data
 -- 4. Run this script against the PostgreSQL database:
 --    psql $DATABASE_URL -f scripts/seed_mvp.sql

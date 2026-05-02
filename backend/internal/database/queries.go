@@ -376,16 +376,58 @@ func (q *ReceiptQueries) ListByHouse(ctx context.Context, houseID int64) ([]doma
 func (q *ReceiptQueries) GetByID(ctx context.Context, receiptID int64) (*domain.Receipt, error) {
 	var r domain.Receipt
 	err := q.db.Pool.QueryRow(ctx,
-		`SELECT id, house_id, store_id, fiscal_key, fiscal_url, issued_at, total_amount, created_at
+		`SELECT id, house_id, store_id, fiscal_key, fiscal_url, issued_at, total_amount, created_by, created_at
 		 FROM receipts
 		 WHERE id = $1`,
 		receiptID,
 	).Scan(&r.ID, &r.HouseID, &r.StoreID, &r.FiscalKey, &r.FiscalURL,
-		&r.IssuedAt, &r.TotalAmount, &r.CreatedAt)
+		&r.IssuedAt, &r.TotalAmount, &r.CreatedBy, &r.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get receipt by id: %w", err)
 	}
 	return &r, nil
+}
+
+// GetByIDWithSubmitter returns a receipt joined with its submitter (when known).
+// The second return value is nil when the receipt has no recorded created_by.
+func (q *ReceiptQueries) GetByIDWithSubmitter(ctx context.Context, receiptID int64) (*domain.Receipt, *domain.User, error) {
+	var r domain.Receipt
+	var (
+		uID    *int64
+		uFID   *string
+		uEmail *string
+		uName  *string
+	)
+	err := q.db.Pool.QueryRow(ctx,
+		`SELECT r.id, r.house_id, r.store_id, r.fiscal_key, r.fiscal_url,
+		        r.issued_at, r.total_amount, r.created_by, r.created_at,
+		        u.id, u.firebase_id, u.email, u.name
+		 FROM receipts r
+		 LEFT JOIN users u ON u.id = r.created_by
+		 WHERE r.id = $1`,
+		receiptID,
+	).Scan(&r.ID, &r.HouseID, &r.StoreID, &r.FiscalKey, &r.FiscalURL,
+		&r.IssuedAt, &r.TotalAmount, &r.CreatedBy, &r.CreatedAt,
+		&uID, &uFID, &uEmail, &uName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get receipt with submitter by id: %w", err)
+	}
+	if uID == nil {
+		return &r, nil, nil
+	}
+	return &r, &domain.User{
+		ID:         *uID,
+		FirebaseID: derefString(uFID),
+		Email:      derefString(uEmail),
+		Name:       derefString(uName),
+	}, nil
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // GetStoreByID returns a store by its ID.
@@ -444,13 +486,14 @@ func (q *ReceiptQueries) UpsertStore(ctx context.Context, store *domain.Store) e
 	return nil
 }
 
-// CreateReceipt inserts a new receipt.
+// CreateReceipt inserts a new receipt. The CreatedBy field, when non-nil,
+// records which House member submitted the originating job.
 func (q *ReceiptQueries) CreateReceipt(ctx context.Context, receipt *domain.Receipt) error {
 	err := q.db.Pool.QueryRow(ctx,
-		`INSERT INTO receipts (house_id, store_id, fiscal_key, fiscal_url, issued_at, total_amount, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		`INSERT INTO receipts (house_id, store_id, fiscal_key, fiscal_url, issued_at, total_amount, created_by, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
 		 RETURNING id, created_at`,
-		receipt.HouseID, receipt.StoreID, receipt.FiscalKey, receipt.FiscalURL, receipt.IssuedAt, receipt.TotalAmount,
+		receipt.HouseID, receipt.StoreID, receipt.FiscalKey, receipt.FiscalURL, receipt.IssuedAt, receipt.TotalAmount, receipt.CreatedBy,
 	).Scan(&receipt.ID, &receipt.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("create receipt: %w", err)

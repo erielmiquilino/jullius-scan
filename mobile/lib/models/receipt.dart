@@ -55,6 +55,28 @@ class Item {
   }
 }
 
+/// House member who originated a receipt's scraping job. Returned only by the
+/// detail endpoint; the listing endpoint omits this block.
+class SubmittedBy {
+  final int id;
+  final String name;
+  final String email;
+
+  const SubmittedBy({
+    required this.id,
+    required this.name,
+    required this.email,
+  });
+
+  factory SubmittedBy.fromJson(Map<String, dynamic> json) {
+    return SubmittedBy(
+      id: json['id'] as int,
+      name: json['name'] as String? ?? '',
+      email: json['email'] as String? ?? '',
+    );
+  }
+}
+
 /// A parsed fiscal receipt.
 class Receipt {
   final int id;
@@ -65,6 +87,7 @@ class Receipt {
   final double totalAmount;
   final Store? store;
   final List<Item>? items;
+  final SubmittedBy? submittedBy;
   final DateTime createdAt;
 
   const Receipt({
@@ -76,6 +99,7 @@ class Receipt {
     required this.totalAmount,
     this.store,
     this.items,
+    this.submittedBy,
     required this.createdAt,
   });
 
@@ -94,6 +118,9 @@ class Receipt {
           ? (json['items'] as List)
               .map((e) => Item.fromJson(e as Map<String, dynamic>))
               .toList()
+          : null,
+      submittedBy: json['submitted_by'] != null
+          ? SubmittedBy.fromJson(json['submitted_by'] as Map<String, dynamic>)
           : null,
       createdAt: DateTime.parse(json['created_at'] as String),
     );

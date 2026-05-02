@@ -95,15 +95,25 @@ type SessionCookie struct {
 
 // ReceiptResponse is the response for GET /receipts/{id}.
 type ReceiptResponse struct {
-	ID          int64          `json:"id"`
-	HouseID     int64          `json:"house_id"`
-	FiscalKey   string         `json:"fiscal_key"`
-	FiscalURL   string         `json:"fiscal_url"`
-	IssuedAt    string         `json:"issued_at"`
-	TotalAmount float64        `json:"total_amount"`
-	Store       *StoreResponse `json:"store,omitempty"`
-	Items       []ItemResponse `json:"items,omitempty"`
-	CreatedAt   string         `json:"created_at"`
+	ID          int64                `json:"id"`
+	HouseID     int64                `json:"house_id"`
+	FiscalKey   string               `json:"fiscal_key"`
+	FiscalURL   string               `json:"fiscal_url"`
+	IssuedAt    string               `json:"issued_at"`
+	TotalAmount float64              `json:"total_amount"`
+	Store       *StoreResponse       `json:"store,omitempty"`
+	Items       []ItemResponse       `json:"items,omitempty"`
+	SubmittedBy *SubmittedByResponse `json:"submitted_by,omitempty"`
+	CreatedAt   string               `json:"created_at"`
+}
+
+// SubmittedByResponse identifies the House member who originated a receipt.
+// Populated only on the receipt detail endpoint when the receipt has a known
+// submitter; omitted from listing responses by design.
+type SubmittedByResponse struct {
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
 }
 
 // StoreResponse is the store data in a receipt response.
@@ -268,7 +278,8 @@ func (h *Handlers) ListReceipts(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetReceipt handles GET /api/v1/receipts/{id}.
-// Returns a single receipt with store and items for the authenticated user's House.
+// Returns a single receipt with store, items, and submitter (when known) for the
+// authenticated user's House.
 func (h *Handlers) GetReceipt(w http.ResponseWriter, r *http.Request) {
 	houseID, ok := middleware.GetHouseID(r.Context())
 	if !ok {
@@ -282,7 +293,7 @@ func (h *Handlers) GetReceipt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	receipt, err := h.rcpt.GetByID(r.Context(), receiptID)
+	receipt, submitter, err := h.rcpt.GetByIDWithSubmitter(r.Context(), receiptID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			respondError(w, http.StatusNotFound, "receipt not found", "NOT_FOUND")
@@ -302,7 +313,7 @@ func (h *Handlers) GetReceipt(w http.ResponseWriter, r *http.Request) {
 	store, _ := h.rcpt.GetStoreByID(r.Context(), receipt.StoreID)
 	items, _ := h.rcpt.GetItemsByReceiptID(r.Context(), receiptID)
 
-	respondJSON(w, http.StatusOK, toReceiptResponse(receipt, store, items))
+	respondJSON(w, http.StatusOK, toReceiptDetailResponse(receipt, store, items, submitter))
 }
 
 // DeleteReceipt handles DELETE /api/v1/receipts/{id}.
@@ -603,6 +614,21 @@ func toReceiptResponse(rc *domain.Receipt, store *domain.Store, items []domain.I
 				TotalPrice:  it.TotalPrice,
 				Barcode:     it.Barcode,
 			})
+		}
+	}
+	return resp
+}
+
+// toReceiptDetailResponse adds the submitter to the base receipt response.
+// Used by GET /api/v1/receipts/{id} only; the listing endpoint keeps the
+// submitter-less shape via toReceiptResponse.
+func toReceiptDetailResponse(rc *domain.Receipt, store *domain.Store, items []domain.Item, submitter *domain.User) ReceiptResponse {
+	resp := toReceiptResponse(rc, store, items)
+	if submitter != nil {
+		resp.SubmittedBy = &SubmittedByResponse{
+			ID:    submitter.ID,
+			Name:  submitter.Name,
+			Email: submitter.Email,
 		}
 	}
 	return resp

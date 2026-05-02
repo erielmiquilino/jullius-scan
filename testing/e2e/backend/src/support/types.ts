@@ -56,6 +56,12 @@ export interface ItemResponse {
   barcode?: string;
 }
 
+export interface SubmittedByResponse {
+  id: number;
+  name: string;
+  email: string;
+}
+
 export interface ReceiptResponse {
   id: number;
   house_id: number;
@@ -65,6 +71,7 @@ export interface ReceiptResponse {
   total_amount: number;
   store?: StoreResponse;
   items?: ItemResponse[];
+  submitted_by?: SubmittedByResponse;
   created_at: string;
 }
 
