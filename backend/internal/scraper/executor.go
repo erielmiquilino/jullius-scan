@@ -89,7 +89,13 @@ func (e *Executor) fetchPage(ctx context.Context, fiscalURL string, cookies []Br
 	)
 	defer browserCancel()
 
-	slog.Info("executor: navigating to fiscal URL", "url", fiscalURL, "resume", len(cookies) > 0)
+	slog.Info("executor: navigating to fiscal URL",
+		"url", fiscalURL,
+		"resume", len(cookies) > 0,
+		"cookie_count", len(cookies),
+		"cookie_names", cookieNamesCSV(cookies),
+		"ua_prefix", uaPrefix(ua),
+	)
 
 	var tasks []chromedp.Action
 
@@ -353,7 +359,13 @@ func (e *Executor) FetchWithDetailPhase(ctx context.Context, summaryURL string, 
 		chromedp.Sleep(2*time.Second),
 	)
 
-	slog.Info("executor: navigating to summary (two-phase)", "url", summaryURL)
+	slog.Info("executor: navigating to summary (two-phase)",
+		"url", summaryURL,
+		"resume", len(cookies) > 0,
+		"cookie_count", len(cookies),
+		"cookie_names", cookieNamesCSV(cookies),
+		"ua_prefix", uaPrefix(ua),
+	)
 	if err := chromedp.Run(browserCtx, summaryTasks...); err != nil {
 		return nil, fmt.Errorf("summary navigation failed: %w", err)
 	}
@@ -463,8 +475,32 @@ func DetectCaptcha(result *ExecutorResult) bool {
 	slog.Warn("captcha detected in page",
 		"indicator", indicator,
 		"title", result.PageTitle,
+		"final_url", result.FinalURL,
+		"html_length", len(result.HTML),
 	)
 	return true
+}
+
+// uaPrefix returns the first 80 chars of a user agent, used for log fields so
+// we don't dump the full string into every line.
+func uaPrefix(ua string) string {
+	if len(ua) > 80 {
+		return ua[:80]
+	}
+	return ua
+}
+
+// cookieNamesCSV returns a comma-separated list of cookie names for log fields.
+// Values are deliberately omitted to keep logs free of session secrets.
+func cookieNamesCSV(cookies []BrowserCookie) string {
+	if len(cookies) == 0 {
+		return ""
+	}
+	names := make([]string, len(cookies))
+	for i, c := range cookies {
+		names[i] = c.Name
+	}
+	return strings.Join(names, ",")
 }
 
 func detectCaptchaIndicator(result *ExecutorResult) string {

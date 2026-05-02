@@ -11,6 +11,7 @@ import 'package:jullius_scan/models/item_search_result.dart';
 import 'package:jullius_scan/models/receipt.dart';
 import 'package:jullius_scan/services/api_client.dart';
 import 'package:jullius_scan/services/auth_service.dart';
+import 'package:jullius_scan/services/scan_telemetry.dart';
 import 'package:jullius_scan/screens/receipt_detail_screen.dart';
 
 /// Period option presented as a FilterChip. A null [days] value means "all time".
@@ -188,17 +189,40 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _navigateToScan() async {
+    ScanTelemetry.setStep('scan.flow_started');
+    ScanTelemetry.log('scan.flow_started');
     final fiscalUrl = await Navigator.push<String>(
       context,
       MaterialPageRoute(builder: (_) => const QrScannerScreen()),
     );
-    if (fiscalUrl == null || !mounted) return;
+    if (fiscalUrl == null) {
+      ScanTelemetry.log('scan.scanner_cancelled');
+      return;
+    }
+    if (!mounted) return;
+
+    final urlHost = Uri.tryParse(fiscalUrl)?.host;
+    ScanTelemetry.log('scan.url_returned', {
+      'host': urlHost,
+      'len': fiscalUrl.length,
+    });
 
     try {
+      ScanTelemetry.setStep('scan.submit_request');
+      final stopwatch = Stopwatch()..start();
       final response = await widget.apiClient.submitReceipt(fiscalUrl);
+      stopwatch.stop();
+
+      ScanTelemetry.log('scan.submit_response', {
+        'job_id': response.jobId,
+        'status': response.status.name,
+        'already_exists': response.alreadyExists,
+        'elapsed_ms': stopwatch.elapsedMilliseconds,
+      });
 
       if (!mounted) return;
 
+      ScanTelemetry.setStep('scan.tracking');
       final completed = await Navigator.push<bool>(
         context,
         MaterialPageRoute(
@@ -208,13 +232,30 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       );
+      ScanTelemetry.log('scan.tracking_done', {'completed': completed});
       if (completed == true) _loadReceipts();
-    } on ApiError catch (e) {
+    } on ApiError catch (e, stack) {
+      ScanTelemetry.recordError(
+        e,
+        stack,
+        reason: 'submitReceipt failed',
+        attrs: {
+          'status_code': e.statusCode,
+          'code': e.code,
+          'host': urlHost,
+        },
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(e.message)),
       );
-    } catch (e) {
+    } catch (e, stack) {
+      ScanTelemetry.recordError(
+        e,
+        stack,
+        reason: 'submitReceipt unexpected',
+        attrs: {'host': urlHost},
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Erro ao enviar nota: $e')),

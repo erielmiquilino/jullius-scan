@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:jullius_scan/features/captcha/captcha_webview_screen.dart';
 import 'package:jullius_scan/models/job.dart';
 import 'package:jullius_scan/services/api_client.dart';
+import 'package:jullius_scan/services/scan_telemetry.dart';
 
 /// Screen that polls a scraping job to completion and handles captcha pauses.
 ///
@@ -49,34 +50,69 @@ class _JobTrackingScreenState extends State<JobTrackingScreen> {
   }
 
   Future<void> _pollUntilTerminal() async {
+    final stopwatch = Stopwatch()..start();
+    ScanTelemetry.setStep('job.poll_start');
+    ScanTelemetry.log('job.poll_start', {'job_id': widget.jobId});
     try {
       final job = await widget.apiClient.pollJobUntilTerminal(widget.jobId);
+      stopwatch.stop();
       if (_disposed) return;
 
+      ScanTelemetry.log('job.poll_terminal', {
+        'job_id': job.id,
+        'status': job.status.name,
+        'attempts': job.attempts,
+        'failure_reason': job.failureReason?.name,
+        'elapsed_ms': stopwatch.elapsedMilliseconds,
+      });
+
       if (job.status.needsCaptcha) {
+        ScanTelemetry.setStep('job.awaiting_captcha');
         setState(() {
           _job = job;
           _state = _TrackingState.awaitingCaptcha;
         });
         await _openCaptchaWebView();
       } else if (job.status == JobStatus.completed) {
+        ScanTelemetry.setStep('job.completed');
         setState(() {
           _job = job;
           _state = _TrackingState.completed;
         });
       } else {
+        ScanTelemetry.setStep('job.failed');
         setState(() {
           _job = job;
           _state = _TrackingState.failed;
         });
       }
-    } on TimeoutException {
+    } on TimeoutException catch (e, stack) {
+      stopwatch.stop();
+      ScanTelemetry.recordError(
+        e,
+        stack,
+        reason: 'job poll timeout',
+        attrs: {
+          'job_id': widget.jobId,
+          'elapsed_ms': stopwatch.elapsedMilliseconds,
+        },
+      );
       if (_disposed) return;
       setState(() {
         _error = 'O processamento excedeu o tempo limite.';
         _state = _TrackingState.failed;
       });
-    } catch (e) {
+    } catch (e, stack) {
+      stopwatch.stop();
+      ScanTelemetry.recordError(
+        e,
+        stack,
+        reason: 'job poll error',
+        attrs: {
+          'job_id': widget.jobId,
+          'elapsed_ms': stopwatch.elapsedMilliseconds,
+        },
+      );
       if (_disposed) return;
       setState(() {
         _error = 'Erro inesperado: $e';
@@ -88,6 +124,7 @@ class _JobTrackingScreenState extends State<JobTrackingScreen> {
   Future<void> _openCaptchaWebView() async {
     if (!mounted) return;
 
+    ScanTelemetry.log('captcha.webview_open', {'job_id': widget.jobId});
     final resolved = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => CaptchaWebViewScreen(
@@ -96,15 +133,21 @@ class _JobTrackingScreenState extends State<JobTrackingScreen> {
         ),
       ),
     );
+    ScanTelemetry.log('captcha.webview_closed', {
+      'job_id': widget.jobId,
+      'resolved': resolved,
+    });
 
     if (_disposed) return;
 
     if (resolved == true) {
       // Resume polling — job was re-enqueued by the backend after cookie submission.
+      ScanTelemetry.setStep('job.poll_resume');
       setState(() => _state = _TrackingState.polling);
       await _pollUntilTerminal();
     } else {
       // User cancelled; job remains in awaiting_captcha until backend timeout.
+      ScanTelemetry.setStep('captcha.cancelled');
       setState(() => _state = _TrackingState.awaitingCaptcha);
     }
   }

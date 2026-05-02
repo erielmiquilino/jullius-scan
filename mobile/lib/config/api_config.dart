@@ -5,7 +5,7 @@
 ///
 /// Defaults:
 ///   - Debug: http://10.0.2.2:8080 (Android emulator -> host localhost)
-///   - Release: https://jullius-api.skadi.digital
+///   - Release: https://jullius-scan.erielmiquilino.me
 class ApiConfig {
   ApiConfig._();
 
@@ -18,7 +18,7 @@ class ApiConfig {
     if (_buildTimeUrl.isNotEmpty) return _buildTimeUrl;
     const isRelease = bool.fromEnvironment('dart.vm.product');
     return isRelease
-        ? 'https://jullius-api.skadi.digital'
+        ? 'https://jullius-scan.erielmiquilino.me'
         : 'http://10.0.2.2:8080';
   }
 

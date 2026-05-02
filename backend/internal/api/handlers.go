@@ -439,6 +439,18 @@ func (h *Handlers) GetCaptchaContext(w http.ResponseWriter, r *http.Request) {
 		sefazURL = job.FiscalURL
 	}
 
+	phase := ""
+	if job.CaptchaPhase != nil {
+		phase = string(*job.CaptchaPhase)
+	}
+	slog.Info("captcha context fetched",
+		"job_id", jobID,
+		"house_id", houseID,
+		"phase", phase,
+		"sefaz_host", parsedHost(sefazURL),
+		"retry_count", job.CaptchaRetryCount,
+	)
+
 	respondJSON(w, http.StatusOK, CaptchaContextResponse{
 		SefazURL:  sefazURL,
 		UserAgent: scraper.UserAgent,
@@ -487,6 +499,19 @@ func (h *Handlers) ResumeCaptcha(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	uaPrefix := req.UserAgent
+	if len(uaPrefix) > 80 {
+		uaPrefix = uaPrefix[:80]
+	}
+	cookieCount := countCookies(req.Cookies)
+	slog.Info("captcha resume received",
+		"job_id", jobID,
+		"house_id", houseID,
+		"cookie_count", cookieCount,
+		"ua_len", len(req.UserAgent),
+		"ua_prefix", uaPrefix,
+	)
+
 	if err := h.jobs.ResumeJobFromCaptcha(r.Context(), jobID, req.Cookies, req.UserAgent); err != nil {
 		slog.Error("failed to resume job from captcha", "error", err, "job_id", jobID)
 		respondError(w, http.StatusInternalServerError, "failed to resume job", "INTERNAL")
@@ -510,6 +535,29 @@ func (h *Handlers) ResumeCaptcha(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Validation ---
+
+// parsedHost extracts the host from a URL string, returning an empty string on
+// parse failure. Used for log fields where we want host without leaking full URL.
+func parsedHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
+// countCookies returns the number of cookies in the JSON array payload, or 0 on
+// any parse error. Used for log fields only.
+func countCookies(raw json.RawMessage) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return 0
+	}
+	return len(arr)
+}
 
 // validateFiscalURL validates that a fiscal URL is a well-formed HTTP(S) URL
 // pointing to a known SEFAZ domain pattern.

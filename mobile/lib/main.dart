@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:jullius_scan/screens/home_screen.dart';
@@ -7,10 +11,25 @@ import 'package:jullius_scan/screens/login_screen.dart';
 import 'package:jullius_scan/services/api_client.dart';
 import 'package:jullius_scan/services/auth_service.dart';
 
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
-  runApp(const JulliusScanApp());
+void main() {
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+    await Firebase.initializeApp();
+
+    await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(
+      !kDebugMode,
+    );
+
+    FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;
+    PlatformDispatcher.instance.onError = (error, stack) {
+      FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+      return true;
+    };
+
+    runApp(const JulliusScanApp());
+  }, (error, stack) {
+    FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+  });
 }
 
 class JulliusScanApp extends StatefulWidget {
@@ -23,15 +42,31 @@ class JulliusScanApp extends StatefulWidget {
 class _JulliusScanAppState extends State<JulliusScanApp> {
   final _authService = AuthService();
   late final ApiClient _apiClient;
+  late final StreamSubscription<User?> _authSub;
 
   @override
   void initState() {
     super.initState();
     _apiClient = ApiClient(authService: _authService);
+    _authSub = _authService.authStateChanges.listen(_onAuthStateChanged);
+  }
+
+  Future<void> _onAuthStateChanged(User? user) async {
+    final crashlytics = FirebaseCrashlytics.instance;
+    if (user == null) {
+      await crashlytics.setUserIdentifier('');
+      return;
+    }
+    await crashlytics.setUserIdentifier(user.uid);
+    final email = user.email;
+    if (email != null) {
+      await crashlytics.setCustomKey('email', email);
+    }
   }
 
   @override
   void dispose() {
+    _authSub.cancel();
     _apiClient.dispose();
     super.dispose();
   }

@@ -5,6 +5,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:jullius_scan/features/scanner/manual_entry_dialog.dart';
 import 'package:jullius_scan/features/scanner/widgets/camera_permission_gate.dart';
 import 'package:jullius_scan/features/scanner/widgets/scanner_viewfinder.dart';
+import 'package:jullius_scan/services/scan_telemetry.dart';
 
 // NFC-e fiscal URL pattern: any *.gov.br domain containing nfce or nfe in path/domain.
 // Brazilian states use varied SEFAZ domains (e.g. sat.sef.sc.gov.br, sefaz.rs.gov.br).
@@ -74,15 +75,28 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
       if (rawValue == null) continue;
 
       if (!_nfceUrlPattern.hasMatch(rawValue)) {
+        ScanTelemetry.log('qr.detect.invalid', {
+          'len': rawValue.length,
+          'preview': rawValue.length > 60
+              ? '${rawValue.substring(0, 60)}…'
+              : rawValue,
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('QR code não reconhecido como NFC-e válida.')),
         );
         return;
       }
 
+      final normalized = _normalizeNfceUrl(rawValue);
+      ScanTelemetry.log('qr.detect.valid', {
+        'raw_len': rawValue.length,
+        'normalized_len': normalized.length,
+        'changed': rawValue != normalized,
+      });
+      ScanTelemetry.setStep('qr.detected');
       setState(() => _hasScanned = true);
       HapticFeedback.lightImpact();
-      Navigator.of(context).pop(_normalizeNfceUrl(rawValue));
+      Navigator.of(context).pop(normalized);
       return;
     }
   }

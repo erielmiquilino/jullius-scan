@@ -5,6 +5,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:jullius_scan/models/captcha_context.dart';
 import 'package:jullius_scan/models/session_cookie.dart';
 import 'package:jullius_scan/services/api_client.dart';
+import 'package:jullius_scan/services/scan_telemetry.dart';
 
 // JS snippet that returns true when the NFC-e receipt content is visible.
 //
@@ -47,19 +48,41 @@ class _CaptchaWebViewScreenState extends State<CaptchaWebViewScreen> {
   bool _isLoading = true;
   bool _isSubmitting = false;
   bool _captchaResolved = false;
+  int _pageFinishedCount = 0;
 
   @override
   void initState() {
     super.initState();
+    ScanTelemetry.setStep('captcha.screen_init');
+    ScanTelemetry.log('captcha.screen_init', {'job_id': widget.jobId});
     _loadContext();
   }
 
   Future<void> _loadContext() async {
+    final stopwatch = Stopwatch()..start();
     try {
       final ctx = await widget.apiClient.fetchCaptchaContext(widget.jobId);
+      stopwatch.stop();
+      ScanTelemetry.log('captcha.context_loaded', {
+        'job_id': widget.jobId,
+        'sefaz_host': Uri.tryParse(ctx.sefazUrl)?.host,
+        'sefaz_url_len': ctx.sefazUrl.length,
+        'ua_len': ctx.userAgent.length,
+        'elapsed_ms': stopwatch.elapsedMilliseconds,
+      });
       setState(() => _ctx = ctx);
       _initWebView(ctx);
-    } catch (e) {
+    } catch (e, stack) {
+      stopwatch.stop();
+      ScanTelemetry.recordError(
+        e,
+        stack,
+        reason: 'fetchCaptchaContext failed',
+        attrs: {
+          'job_id': widget.jobId,
+          'elapsed_ms': stopwatch.elapsedMilliseconds,
+        },
+      );
       setState(() {
         _loadError = 'Não foi possível carregar o contexto do captcha: $e';
         _isLoading = false;
@@ -68,6 +91,10 @@ class _CaptchaWebViewScreenState extends State<CaptchaWebViewScreen> {
   }
 
   void _initWebView(CaptchaContext ctx) {
+    ScanTelemetry.log('captcha.webview_init', {
+      'job_id': widget.jobId,
+      'sefaz_host': Uri.tryParse(ctx.sefazUrl)?.host,
+    });
     _webController = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       // Do not override the user agent — the device's native Chrome/Android UA
@@ -75,9 +102,29 @@ class _CaptchaWebViewScreenState extends State<CaptchaWebViewScreen> {
       // Linux user agent causes an immediate "Falha na verificação".
       ..setNavigationDelegate(
         NavigationDelegate(
+          onPageStarted: (url) {
+            ScanTelemetry.log('captcha.page_started', {
+              'host': Uri.tryParse(url)?.host,
+              'url_len': url.length,
+            });
+          },
           onPageFinished: (url) => _onPageFinished(url, ctx.sefazUrl),
           onWebResourceError: (error) {
+            ScanTelemetry.log('captcha.web_resource_error', {
+              'job_id': widget.jobId,
+              'description': error.description,
+              'error_type': error.errorType?.name,
+              'error_code': error.errorCode,
+              'is_main_frame': error.isForMainFrame,
+            });
             setState(() => _isLoading = false);
+          },
+          onHttpError: (error) {
+            ScanTelemetry.log('captcha.http_error', {
+              'job_id': widget.jobId,
+              'status': error.response?.statusCode,
+              'host': Uri.tryParse(error.request?.uri.toString() ?? '')?.host,
+            });
           },
         ),
       )
@@ -85,17 +132,47 @@ class _CaptchaWebViewScreenState extends State<CaptchaWebViewScreen> {
   }
 
   Future<void> _onPageFinished(String url, String sefazUrl) async {
+    _pageFinishedCount++;
     setState(() => _isLoading = false);
 
-    if (_captchaResolved || _isSubmitting) return;
+    if (_captchaResolved || _isSubmitting) {
+      ScanTelemetry.log('captcha.page_finished_ignored', {
+        'job_id': widget.jobId,
+        'count': _pageFinishedCount,
+        'resolved': _captchaResolved,
+        'submitting': _isSubmitting,
+      });
+      return;
+    }
 
     // Check if the page now shows NFC-e receipt content.
-    final result = await _webController.runJavaScriptReturningResult(
-      _nfceContentCheck,
-    );
-    final resolved = result.toString() == 'true';
+    bool resolved = false;
+    String? rawResult;
+    try {
+      final result = await _webController.runJavaScriptReturningResult(
+        _nfceContentCheck,
+      );
+      rawResult = result.toString();
+      resolved = rawResult == 'true';
+    } catch (e, stack) {
+      ScanTelemetry.recordError(
+        e,
+        stack,
+        reason: 'content check JS error',
+        attrs: {'job_id': widget.jobId, 'count': _pageFinishedCount},
+      );
+    }
+
+    ScanTelemetry.log('captcha.content_check', {
+      'job_id': widget.jobId,
+      'count': _pageFinishedCount,
+      'host': Uri.tryParse(url)?.host,
+      'resolved': resolved,
+      'raw_js_result': rawResult,
+    });
 
     if (resolved) {
+      ScanTelemetry.setStep('captcha.content_visible');
       await _extractAndSubmitCookies(url, sefazUrl);
     }
   }
@@ -107,6 +184,7 @@ class _CaptchaWebViewScreenState extends State<CaptchaWebViewScreen> {
     if (_isSubmitting) return;
     setState(() => _isSubmitting = true);
 
+    final stopwatch = Stopwatch()..start();
     try {
       final host = Uri.parse(sefazUrl).host;
       final cookiesUrl = currentUrl.isNotEmpty ? currentUrl : sefazUrl;
@@ -130,6 +208,21 @@ class _CaptchaWebViewScreenState extends State<CaptchaWebViewScreen> {
           )
           .toList();
 
+      // Capture cookie names (no values) for diagnostics — names alone reveal
+      // whether Cloudflare's cf_clearance / __cf_bm cookies are present.
+      final cookieNames = cookies.map((c) => c.name).toList();
+      final hasCfClearance = cookieNames.any((n) => n == 'cf_clearance');
+      final hasCfBm = cookieNames.any((n) => n == '__cf_bm');
+
+      ScanTelemetry.log('captcha.cookies_extracted', {
+        'job_id': widget.jobId,
+        'count': cookies.length,
+        'host': host,
+        'has_cf_clearance': hasCfClearance,
+        'has_cf_bm': hasCfBm,
+        'names': cookieNames.join(','),
+      });
+
       // Capture the WebView's actual user-agent so the worker can replay the
       // Cloudflare session with the same UA that the cookie was issued for.
       String? webViewUA;
@@ -142,22 +235,52 @@ class _CaptchaWebViewScreenState extends State<CaptchaWebViewScreen> {
         webViewUA = raw.startsWith('"') && raw.endsWith('"')
             ? raw.substring(1, raw.length - 1)
             : raw;
-      } catch (_) {
+        ScanTelemetry.log('captcha.ua_captured', {
+          'job_id': widget.jobId,
+          'len': webViewUA.length,
+          'prefix': webViewUA.length > 80
+              ? webViewUA.substring(0, 80)
+              : webViewUA,
+        });
+      } catch (e, stack) {
+        ScanTelemetry.recordError(
+          e,
+          stack,
+          reason: 'capture UA failed',
+          attrs: {'job_id': widget.jobId},
+        );
         // If we can't get the UA, proceed without it — the backend will keep
         // whatever was previously stored, which is better than failing entirely.
       }
 
+      ScanTelemetry.setStep('captcha.resume_submit');
       await widget.apiClient.submitCaptchaResume(
         widget.jobId,
         cookies,
         userAgent: webViewUA,
       );
+      stopwatch.stop();
+      ScanTelemetry.log('captcha.resume_submitted', {
+        'job_id': widget.jobId,
+        'cookie_count': cookies.length,
+        'elapsed_ms': stopwatch.elapsedMilliseconds,
+      });
 
       setState(() => _captchaResolved = true);
       if (mounted) {
         Navigator.of(context).pop(true);
       }
-    } catch (e) {
+    } catch (e, stack) {
+      stopwatch.stop();
+      ScanTelemetry.recordError(
+        e,
+        stack,
+        reason: 'submitCaptchaResume failed',
+        attrs: {
+          'job_id': widget.jobId,
+          'elapsed_ms': stopwatch.elapsedMilliseconds,
+        },
+      );
       setState(() => _isSubmitting = false);
       if (!mounted) return;
       _showResumeError(e.toString(), sefazUrl);
@@ -181,6 +304,9 @@ class _CaptchaWebViewScreenState extends State<CaptchaWebViewScreen> {
           ElevatedButton(
             onPressed: () {
               Navigator.of(ctx).pop(true);
+              ScanTelemetry.log('captcha.resume_retry', {
+                'job_id': widget.jobId,
+              });
               _extractAndSubmitCookies(sefazUrl, sefazUrl);
             },
             child: const Text('Tentar novamente'),
@@ -191,6 +317,7 @@ class _CaptchaWebViewScreenState extends State<CaptchaWebViewScreen> {
   }
 
   void _cancel() {
+    ScanTelemetry.log('captcha.user_cancelled', {'job_id': widget.jobId});
     Navigator.of(context).pop(false);
   }
 
