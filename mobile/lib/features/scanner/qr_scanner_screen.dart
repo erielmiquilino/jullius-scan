@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 import 'package:jullius_scan/features/scanner/manual_entry_dialog.dart';
+import 'package:jullius_scan/features/scanner/widgets/camera_permission_gate.dart';
+import 'package:jullius_scan/features/scanner/widgets/scanner_viewfinder.dart';
 
 // NFC-e fiscal URL pattern: any *.gov.br domain containing nfce or nfe in path/domain.
 // Brazilian states use varied SEFAZ domains (e.g. sat.sef.sc.gov.br, sefaz.rs.gov.br).
@@ -59,23 +61,10 @@ class QrScannerScreen extends StatefulWidget {
 }
 
 class _QrScannerScreenState extends State<QrScannerScreen> {
-  final MobileScannerController _controller = MobileScannerController();
+  final MobileScannerController _controller = MobileScannerController(
+    formats: const [BarcodeFormat.qrCode],
+  );
   bool _hasScanned = false;
-  bool _cameraPermissionDenied = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _checkCameraPermission();
-  }
-
-  Future<void> _checkCameraPermission() async {
-    final status = await Permission.camera.request();
-    if (!mounted) return;
-    if (status.isPermanentlyDenied || status.isDenied) {
-      setState(() => _cameraPermissionDenied = true);
-    }
-  }
 
   void _onDetect(BarcodeCapture capture) {
     if (_hasScanned) return;
@@ -92,6 +81,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
       }
 
       setState(() => _hasScanned = true);
+      HapticFeedback.lightImpact();
       Navigator.of(context).pop(_normalizeNfceUrl(rawValue));
       return;
     }
@@ -119,6 +109,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
       appBar: AppBar(
         title: const Text('Escanear NFC-e'),
         actions: [
+          _TorchButton(controller: _controller),
           IconButton(
             icon: const Icon(Icons.keyboard),
             tooltip: 'Inserir URL manualmente',
@@ -126,7 +117,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
           ),
         ],
       ),
-      body: _cameraPermissionDenied ? _buildPermissionDenied() : _buildScanner(),
+      body: CameraPermissionGate(child: _buildScanner()),
     );
   }
 
@@ -134,6 +125,9 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
     return Stack(
       children: [
         MobileScanner(controller: _controller, onDetect: _onDetect),
+        const Positioned.fill(
+          child: ScannerViewfinder(aspectRatio: 1.0),
+        ),
         Positioned(
           bottom: 32,
           left: 0,
@@ -152,34 +146,36 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
       ],
     );
   }
+}
 
-  Widget _buildPermissionDenied() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.no_photography, size: 64, color: Colors.grey),
-            const SizedBox(height: 16),
-            const Text(
-              'Permissão de câmera negada.',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 16),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Para escanear QR codes, habilite o acesso à câmera nas configurações do sistema.',
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton(
-              onPressed: openAppSettings,
-              child: const Text('Abrir Configurações'),
-            ),
-          ],
-        ),
-      ),
+class _TorchButton extends StatelessWidget {
+  final MobileScannerController controller;
+
+  const _TorchButton({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<MobileScannerState>(
+      valueListenable: controller,
+      builder: (_, state, _) {
+        switch (state.torchState) {
+          case TorchState.unavailable:
+            return const SizedBox.shrink();
+          case TorchState.on:
+          case TorchState.auto:
+            return IconButton(
+              icon: const Icon(Icons.flash_on),
+              tooltip: 'Desligar lanterna',
+              onPressed: controller.toggleTorch,
+            );
+          case TorchState.off:
+            return IconButton(
+              icon: const Icon(Icons.flash_off),
+              tooltip: 'Ligar lanterna',
+              onPressed: controller.toggleTorch,
+            );
+        }
+      },
     );
   }
 }

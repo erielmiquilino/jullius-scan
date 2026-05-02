@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import 'package:jullius_scan/features/jobs/job_tracking_screen.dart';
+import 'package:jullius_scan/features/scanner/product_barcode_scanner_screen.dart';
 import 'package:jullius_scan/features/scanner/qr_scanner_screen.dart';
 import 'package:jullius_scan/models/api_error.dart';
 import 'package:jullius_scan/models/item_search_result.dart';
@@ -176,6 +177,16 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _onScanBarcode() async {
+    final ean = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => const ProductBarcodeScannerScreen()),
+    );
+    if (ean == null || !mounted) return;
+    _searchController.text = ean;
+    _onQueryChanged(ean);
+  }
+
   Future<void> _navigateToScan() async {
     final fiscalUrl = await Navigator.push<String>(
       context,
@@ -264,6 +275,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _SearchHeader(
             controller: _searchController,
             onChanged: _onQueryChanged,
+            onScanBarcode: _onScanBarcode,
             periodOptions: _periodOptions,
             selectedPeriodDays: _periodDays,
             onPeriodSelected: _onPeriodChanged,
@@ -469,6 +481,7 @@ class _HomeScreenState extends State<HomeScreen> {
 class _SearchHeader extends StatelessWidget {
   final TextEditingController controller;
   final ValueChanged<String> onChanged;
+  final VoidCallback onScanBarcode;
   final List<_PeriodOption> periodOptions;
   final int? selectedPeriodDays;
   final ValueChanged<int?> onPeriodSelected;
@@ -477,6 +490,7 @@ class _SearchHeader extends StatelessWidget {
   const _SearchHeader({
     required this.controller,
     required this.onChanged,
+    required this.onScanBarcode,
     required this.periodOptions,
     required this.selectedPeriodDays,
     required this.onPeriodSelected,
@@ -497,9 +511,14 @@ class _SearchHeader extends StatelessWidget {
               hintText: 'Buscar item ou código de barras',
               prefixIcon: const Icon(Icons.search),
               suffixIcon: controller.text.isEmpty
-                  ? null
+                  ? IconButton(
+                      icon: const Icon(Icons.barcode_reader),
+                      tooltip: 'Escanear código de barras',
+                      onPressed: onScanBarcode,
+                    )
                   : IconButton(
                       icon: const Icon(Icons.close),
+                      tooltip: 'Limpar',
                       onPressed: () {
                         controller.clear();
                         onChanged('');
