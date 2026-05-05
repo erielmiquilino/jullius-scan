@@ -128,4 +128,7 @@ type ScrapingJob struct {
 	// without barcode) as JSON, so on a detail-phase resume the worker can skip
 	// re-scraping the summary page.
 	ParsedSummary *json.RawMessage `json:"parsed_summary,omitempty"`
+	// CaptchaResumePageHTML holds rendered WebView HTML submitted during captcha
+	// resume. It is consumed by the worker and never exposed through the API.
+	CaptchaResumePageHTML *string `json:"captcha_resume_page_html,omitempty"`
 }

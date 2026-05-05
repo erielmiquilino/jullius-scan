@@ -19,6 +19,8 @@ import (
 	"github.com/erielfranco/jullius-scan/backend/internal/scraper"
 )
 
+const maxCaptchaResumePageHTMLBytes = 2 * 1024 * 1024
+
 // Handlers holds the dependencies for API request handlers.
 type Handlers struct {
 	db    *database.DB
@@ -77,8 +79,10 @@ type CaptchaContextResponse struct {
 
 // CaptchaResumeRequest is the request body for POST /jobs/{id}/captcha/resume.
 type CaptchaResumeRequest struct {
-	Cookies   json.RawMessage `json:"cookies"`
-	UserAgent string          `json:"user_agent,omitempty"`
+	Cookies    json.RawMessage `json:"cookies"`
+	UserAgent  string          `json:"user_agent,omitempty"`
+	CurrentURL string          `json:"current_url,omitempty"`
+	PageHTML   string          `json:"page_html,omitempty"`
 }
 
 // SessionCookie represents a browser cookie for serialisation.
@@ -498,6 +502,14 @@ func (h *Handlers) ResumeCaptcha(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "invalid request body", "INVALID_BODY")
 		return
 	}
+	if len([]byte(req.PageHTML)) > maxCaptchaResumePageHTMLBytes {
+		respondError(w, http.StatusBadRequest, "page_html exceeds maximum size", "PAGE_HTML_TOO_LARGE")
+		return
+	}
+	if err := validateOptionalHTTPURL(req.CurrentURL); err != nil {
+		respondError(w, http.StatusBadRequest, err.Error(), "INVALID_CURRENT_URL")
+		return
+	}
 
 	uaPrefix := req.UserAgent
 	if len(uaPrefix) > 80 {
@@ -510,9 +522,12 @@ func (h *Handlers) ResumeCaptcha(w http.ResponseWriter, r *http.Request) {
 		"cookie_count", cookieCount,
 		"ua_len", len(req.UserAgent),
 		"ua_prefix", uaPrefix,
+		"current_host", parsedHost(req.CurrentURL),
+		"page_html_len", len(req.PageHTML),
+		"has_page_html", strings.TrimSpace(req.PageHTML) != "",
 	)
 
-	if err := h.jobs.ResumeJobFromCaptcha(r.Context(), jobID, req.Cookies, req.UserAgent); err != nil {
+	if err := h.jobs.ResumeJobFromCaptcha(r.Context(), jobID, req.Cookies, req.UserAgent, req.CurrentURL, req.PageHTML); err != nil {
 		slog.Error("failed to resume job from captcha", "error", err, "job_id", jobID)
 		respondError(w, http.StatusInternalServerError, "failed to resume job", "INTERNAL")
 		return
@@ -581,6 +596,23 @@ func validateFiscalURL(rawURL string) error {
 
 	// Accept any URL in MVP — SEFAZ domains vary by state.
 	// Future: add allowlist of known SEFAZ hosts.
+	return nil
+}
+
+func validateOptionalHTTPURL(rawURL string) error {
+	if strings.TrimSpace(rawURL) == "" {
+		return nil
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return errors.New("current_url is not a valid URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return errors.New("current_url must use http or https scheme")
+	}
+	if parsed.Host == "" {
+		return errors.New("current_url must have a valid host")
+	}
 	return nil
 }
 

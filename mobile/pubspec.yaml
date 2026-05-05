@@ -1,8 +1,7 @@
 name: jullius_scan
 description: "Jullius Scan - Brazilian NFC-e fiscal receipt scanner"
 publish_to: 'none'
-version: 0.0.1+1
-
+version: 0.0.2+2
 environment:
   sdk: ^3.10.7
 

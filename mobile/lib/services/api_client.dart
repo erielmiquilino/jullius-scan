@@ -22,8 +22,8 @@ class ApiClient {
   final http.Client _http;
 
   ApiClient({required AuthService authService, http.Client? httpClient})
-      : _authService = authService,
-        _http = httpClient ?? http.Client();
+    : _authService = authService,
+      _http = httpClient ?? http.Client();
 
   String get _baseUrl => ApiConfig.baseUrl;
 
@@ -120,8 +120,10 @@ class ApiClient {
       params['period_days'] = periodDays.toString();
     }
     final qs = params.entries
-        .map((e) =>
-            '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}')
+        .map(
+          (e) =>
+              '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}',
+        )
         .join('&');
     final json = await _get('/api/v1/items/search?$qs');
     return ItemSearchPage.fromJson(json as Map<String, dynamic>);
@@ -171,10 +173,15 @@ class ApiClient {
     int jobId,
     List<SessionCookie> cookies, {
     String? userAgent,
+    String? currentUrl,
+    String? pageHtml,
   }) async {
     final body = jsonEncode({
       'cookies': cookies.map((c) => c.toJson()).toList(),
       if (userAgent != null && userAgent.isNotEmpty) 'user_agent': userAgent,
+      if (currentUrl != null && currentUrl.isNotEmpty)
+        'current_url': currentUrl,
+      if (pageHtml != null && pageHtml.isNotEmpty) 'page_html': pageHtml,
     });
     await _post('/api/v1/jobs/$jobId/captcha/resume', body);
   }

@@ -99,7 +99,7 @@ func (q *JobQueries) FindActiveJobByURL(ctx context.Context, houseID int64, fisc
 		`SELECT id, house_id, submitted_by, fiscal_url, status, attempts,
 		        failure_reason, error_detail, receipt_id, created_at, started_at, completed_at,
 		        captcha_current_url, captcha_session_cookies, captcha_pending_at, captcha_resumed_at, captcha_retry_count, captcha_user_agent,
-		        captcha_phase, parsed_summary
+		        captcha_phase, parsed_summary, captcha_resume_page_html
 		 FROM scraping_jobs
 		 WHERE house_id = $1 AND fiscal_url = $2 AND status IN ('queued', 'processing', 'awaiting_captcha')
 		 LIMIT 1`,
@@ -107,7 +107,7 @@ func (q *JobQueries) FindActiveJobByURL(ctx context.Context, houseID int64, fisc
 	).Scan(&j.ID, &j.HouseID, &j.SubmittedBy, &j.FiscalURL, &j.Status, &j.Attempts,
 		&j.FailureReason, &j.ErrorDetail, &j.ReceiptID, &j.CreatedAt, &j.StartedAt, &j.CompletedAt,
 		&j.CaptchaCurrentURL, &j.CaptchaSessionCookies, &j.CaptchaPendingAt, &j.CaptchaResumedAt, &j.CaptchaRetryCount, &j.CaptchaUserAgent,
-		&j.CaptchaPhase, &j.ParsedSummary)
+		&j.CaptchaPhase, &j.ParsedSummary, &j.CaptchaResumePageHTML)
 	if err != nil {
 		return nil, fmt.Errorf("find active job by url: %w", err)
 	}
@@ -139,7 +139,7 @@ func (q *JobQueries) FindJobByReceiptID(ctx context.Context, receiptID int64) (*
 		`SELECT id, house_id, submitted_by, fiscal_url, status, attempts,
 		        failure_reason, error_detail, receipt_id, created_at, started_at, completed_at,
 		        captcha_current_url, captcha_session_cookies, captcha_pending_at, captcha_resumed_at, captcha_retry_count, captcha_user_agent,
-		        captcha_phase, parsed_summary
+		        captcha_phase, parsed_summary, captcha_resume_page_html
 		 FROM scraping_jobs
 		 WHERE receipt_id = $1
 		 LIMIT 1`,
@@ -147,7 +147,7 @@ func (q *JobQueries) FindJobByReceiptID(ctx context.Context, receiptID int64) (*
 	).Scan(&j.ID, &j.HouseID, &j.SubmittedBy, &j.FiscalURL, &j.Status, &j.Attempts,
 		&j.FailureReason, &j.ErrorDetail, &j.ReceiptID, &j.CreatedAt, &j.StartedAt, &j.CompletedAt,
 		&j.CaptchaCurrentURL, &j.CaptchaSessionCookies, &j.CaptchaPendingAt, &j.CaptchaResumedAt, &j.CaptchaRetryCount, &j.CaptchaUserAgent,
-		&j.CaptchaPhase, &j.ParsedSummary)
+		&j.CaptchaPhase, &j.ParsedSummary, &j.CaptchaResumePageHTML)
 	if err != nil {
 		return nil, fmt.Errorf("find job by receipt_id: %w", err)
 	}
@@ -161,14 +161,14 @@ func (q *JobQueries) GetByID(ctx context.Context, jobID int64) (*domain.Scraping
 		`SELECT id, house_id, submitted_by, fiscal_url, status, attempts,
 		        failure_reason, error_detail, receipt_id, created_at, started_at, completed_at,
 		        captcha_current_url, captcha_session_cookies, captcha_pending_at, captcha_resumed_at, captcha_retry_count, captcha_user_agent,
-		        captcha_phase, parsed_summary
+		        captcha_phase, parsed_summary, captcha_resume_page_html
 		 FROM scraping_jobs
 		 WHERE id = $1`,
 		jobID,
 	).Scan(&j.ID, &j.HouseID, &j.SubmittedBy, &j.FiscalURL, &j.Status, &j.Attempts,
 		&j.FailureReason, &j.ErrorDetail, &j.ReceiptID, &j.CreatedAt, &j.StartedAt, &j.CompletedAt,
 		&j.CaptchaCurrentURL, &j.CaptchaSessionCookies, &j.CaptchaPendingAt, &j.CaptchaResumedAt, &j.CaptchaRetryCount, &j.CaptchaUserAgent,
-		&j.CaptchaPhase, &j.ParsedSummary)
+		&j.CaptchaPhase, &j.ParsedSummary, &j.CaptchaResumePageHTML)
 	if err != nil {
 		return nil, fmt.Errorf("get job by id: %w", err)
 	}
@@ -190,6 +190,7 @@ func (q *JobQueries) PauseJobForCaptcha(ctx context.Context, jobID int64, curren
 		     captcha_session_cookies = $3,
 		     captcha_phase           = $4,
 		     parsed_summary          = COALESCE($5, parsed_summary),
+		     captcha_resume_page_html = NULL,
 		     captcha_pending_at      = NOW()
 		 WHERE id = $1 AND status = 'processing'`,
 		jobID, currentURL, cookies, string(phase), summaryArg,
@@ -234,24 +235,33 @@ func (q *ReceiptQueries) DeleteByIDAndHouse(ctx context.Context, receiptID, hous
 	return nil
 }
 
-// ResumeJobFromCaptcha validates the job is in awaiting_captcha, updates the cookies and
-// user agent, increments retry count, and transitions back to processing for re-dispatch.
-// userAgent is the browser UA sent by the mobile app; it is stored so the worker can
-// replay the request with the same UA that Cloudflare issued the session cookie for.
-func (q *JobQueries) ResumeJobFromCaptcha(ctx context.Context, jobID int64, cookies json.RawMessage, userAgent string) error {
+// ResumeJobFromCaptcha validates the job is in awaiting_captcha, updates the
+// cookies, user agent, optional current URL, optional rendered page HTML,
+// increments retry count, and transitions back to processing for re-dispatch.
+func (q *JobQueries) ResumeJobFromCaptcha(ctx context.Context, jobID int64, cookies json.RawMessage, userAgent, currentURL, pageHTML string) error {
 	var uaArg interface{}
 	if userAgent != "" {
 		uaArg = userAgent
+	}
+	var urlArg interface{}
+	if currentURL != "" {
+		urlArg = currentURL
+	}
+	var htmlArg interface{}
+	if pageHTML != "" {
+		htmlArg = pageHTML
 	}
 	tag, err := q.db.Pool.Exec(ctx,
 		`UPDATE scraping_jobs
 		 SET status                  = 'processing',
 		     captcha_session_cookies = $2,
 		     captcha_user_agent      = COALESCE($3, captcha_user_agent),
+		     captcha_current_url     = COALESCE($4, captcha_current_url),
+		     captcha_resume_page_html = $5,
 		     captcha_resumed_at      = NOW(),
 		     captcha_retry_count     = captcha_retry_count + 1
 		 WHERE id = $1 AND status = 'awaiting_captcha'`,
-		jobID, cookies, uaArg,
+		jobID, cookies, uaArg, urlArg, htmlArg,
 	)
 	if err != nil {
 		return fmt.Errorf("resume job from captcha: %w", err)
@@ -259,7 +269,13 @@ func (q *JobQueries) ResumeJobFromCaptcha(ctx context.Context, jobID int64, cook
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("resume job from captcha: job %d is not in awaiting_captcha state", jobID)
 	}
-	slog.Info("job resumed from captcha", "job_id", jobID, "has_user_agent", userAgent != "")
+	slog.Info("job resumed from captcha",
+		"job_id", jobID,
+		"has_user_agent", userAgent != "",
+		"has_current_url", currentURL != "",
+		"has_page_html", pageHTML != "",
+		"page_html_len", len(pageHTML),
+	)
 	return nil
 }
 
@@ -324,6 +340,7 @@ func (q *JobQueries) UpdateJobStatus(ctx context.Context, jobID int64, status do
 		     failure_reason = $3,
 		     error_detail = $4,
 		     receipt_id = $5,
+		     captcha_resume_page_html = CASE WHEN $6 IN ('completed', 'failed') THEN NULL ELSE captcha_resume_page_html END,
 		     started_at = CASE WHEN $6 = 'processing' AND started_at IS NULL THEN NOW() ELSE started_at END,
 		     completed_at = CASE WHEN $6 IN ('completed', 'failed') THEN NOW() ELSE completed_at END,
 		     attempts = CASE WHEN $6 = 'processing' THEN attempts + 1 ELSE attempts END

@@ -216,6 +216,10 @@ func (w *Worker) processResume(ctx context.Context, jobCtx context.Context, msg 
 // It navigates only to the detail page (using captcha_current_url), merges EANs onto
 // the persisted parsed_summary, and persists the final receipt.
 func (w *Worker) resumeDetailPhase(ctx context.Context, jobCtx context.Context, msg *queue.JobMessage, job *domain.ScrapingJob, cookies []BrowserCookie, ua string) {
+	if w.completeDetailPhaseFromSubmittedHTML(ctx, msg, job) {
+		return
+	}
+
 	if job.CaptchaCurrentURL == nil || *job.CaptchaCurrentURL == "" {
 		slog.Error("resume detail phase: captcha_current_url is empty", "job_id", msg.JobID)
 		w.handleFailure(ctx, msg, fmt.Errorf("detail-phase resume: captcha_current_url is empty"))
@@ -265,6 +269,62 @@ func (w *Worker) resumeDetailPhase(ctx context.Context, jobCtx context.Context, 
 	}
 
 	slog.Info("job completed via detail-phase resume", "job_id", msg.JobID)
+}
+
+// completeDetailPhaseFromSubmittedHTML completes a detail-phase captcha resume
+// from the rendered WebView HTML submitted by the mobile app. It returns false
+// when no usable HTML was submitted so the caller can fall back to browser resume.
+func (w *Worker) completeDetailPhaseFromSubmittedHTML(ctx context.Context, msg *queue.JobMessage, job *domain.ScrapingJob) bool {
+	if job.CaptchaResumePageHTML == nil || strings.TrimSpace(*job.CaptchaResumePageHTML) == "" {
+		return false
+	}
+
+	barcodes, err := ParseDetailPage(*job.CaptchaResumePageHTML)
+	if err != nil {
+		slog.Warn("resume detail phase: submitted HTML is not a usable detail page, falling back to browser resume",
+			"job_id", msg.JobID,
+			"html_length", len(*job.CaptchaResumePageHTML),
+			"error", err,
+		)
+		return false
+	}
+
+	if job.ParsedSummary == nil {
+		slog.Error("resume detail phase: parsed_summary is nil for submitted HTML resume", "job_id", msg.JobID)
+		w.handleFailure(ctx, msg, fmt.Errorf("detail-phase submitted HTML resume: parsed_summary is missing"))
+		return true
+	}
+
+	var parsed ParsedReceipt
+	if err := json.Unmarshal(*job.ParsedSummary, &parsed); err != nil {
+		w.handleFailure(ctx, msg, fmt.Errorf("detail-phase submitted HTML resume: unmarshal parsed_summary: %w", err))
+		return true
+	}
+
+	enriched, err := MergeBarcodes(parsed.Items, barcodes)
+	if err != nil {
+		slog.Warn("resume detail phase: submitted HTML barcode merge failed, persisting summary items without barcode",
+			"job_id", msg.JobID,
+			"error", err,
+		)
+	} else {
+		parsed.Items = enriched
+	}
+
+	if err := w.persistReceipt(ctx, msg, &parsed, job.SubmittedBy); err != nil {
+		reason := domain.FailureUnknown
+		_ = w.jobs.UpdateJobStatus(ctx, msg.JobID, domain.JobStatusFailed, &reason,
+			fmt.Sprintf("failed to persist receipt: %v", err), nil)
+		slog.Error("job failed: persistence error on submitted HTML detail resume", "job_id", msg.JobID, "error", err)
+		return true
+	}
+
+	slog.Info("job completed via submitted detail HTML resume",
+		"job_id", msg.JobID,
+		"ean_count", len(barcodes),
+		"html_length", len(*job.CaptchaResumePageHTML),
+	)
+	return true
 }
 
 // enrichWithBarcodes parses the detail page HTML, merges EAN codes into items by

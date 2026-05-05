@@ -20,10 +20,16 @@ export async function submitCaptchaResume(
   jobId: number,
   cookies: SessionCookie[],
   bearerToken: string,
+  options: { userAgent?: string; currentUrl?: string; pageHtml?: string } = {},
 ): Promise<void> {
   const res = await api.post(`/api/v1/jobs/${jobId}/captcha/resume`, {
     headers: { Authorization: `Bearer ${bearerToken}` },
-    data: { cookies },
+    data: {
+      cookies,
+      ...(options.userAgent ? { user_agent: options.userAgent } : {}),
+      ...(options.currentUrl ? { current_url: options.currentUrl } : {}),
+      ...(options.pageHtml ? { page_html: options.pageHtml } : {}),
+    },
   });
   if (!res.ok()) {
     throw new Error(`submitCaptchaResume failed: ${res.status()} ${await res.text()}`);
